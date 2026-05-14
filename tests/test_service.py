@@ -5,7 +5,11 @@ from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
 
 from housescraper_mcp.artifacts import ArtifactStore
-from housescraper_mcp.service import HouseScraperService, prepare_cookies
+from housescraper_mcp.service import (
+    HouseScraperService,
+    build_baseline_summary,
+    default_adapter_factories,
+)
 
 
 class FakeAdapter:
@@ -22,7 +26,7 @@ class FakeAdapter:
 
 
 def test_probe_returns_status_and_artifact(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("housescraper_mcp.service.prepare_cookies", lambda domain: {})
+    monkeypatch.setattr("housescraper_mcp.service.prepare_cookies", lambda domain, fallback_domains=(): {})
 
     service = HouseScraperService(
         adapter_factories={
@@ -39,6 +43,19 @@ def test_probe_returns_status_and_artifact(monkeypatch, tmp_path: Path) -> None:
                     )
                 ]
             ),
+            "lianjia": lambda: FakeAdapter(
+                [
+                    House(
+                        id="3",
+                        platform="lianjia",
+                        title="链家测试房源",
+                        price=510.0,
+                        price_unit="万",
+                        area=92.0,
+                        url="https://example.com/3",
+                    )
+                ]
+            ),
             "anjuke": lambda: FakeAdapter(error=RuntimeError("captcha required")),
         },
         artifact_store=ArtifactStore(root=tmp_path),
@@ -48,14 +65,17 @@ def test_probe_returns_status_and_artifact(monkeypatch, tmp_path: Path) -> None:
 
     assert response["ok"] is True
     assert response["results"][0]["requested_platform"] == "lianjia"
-    assert response["results"][0]["platform"] == "beike"
+    assert response["results"][0]["platform"] == "lianjia"
     assert response["results"][0]["result_count"] == 1
     assert response["results"][1]["error_type"] == "captcha"
     assert Path(response["results"][0]["debug_artifact_path"]).exists()
 
 
 def test_search_returns_partial_results_when_one_platform_fails(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("housescraper_mcp.service.prepare_cookies", lambda domain: {"session": "ok"})
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
 
     service = HouseScraperService(
         adapter_factories={
@@ -86,7 +106,10 @@ def test_search_returns_partial_results_when_one_platform_fails(monkeypatch, tmp
 
 
 def test_search_applies_client_side_filters(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("housescraper_mcp.service.prepare_cookies", lambda domain: {"session": "ok"})
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
 
     service = HouseScraperService(
         adapter_factories={
@@ -135,28 +158,11 @@ def test_search_applies_client_side_filters(monkeypatch, tmp_path: Path) -> None
     assert response["platform_status"][0]["raw_result_count"] == 2
 
 
-def test_prepare_cookies_merges_browser_values_into_cached_file(monkeypatch) -> None:
-    saved: dict[str, dict[str, str]] = {}
-
-    monkeypatch.setattr("housescraper_mcp.service.get_cookies", lambda domain: {"lianjia_ssid": "old"})
-    monkeypatch.setattr(
-        "housescraper_mcp.service._try_browser_cookie3",
-        lambda domain: {"lianjia_ssid": "new", "hip": "ok", "srcid": "1"},
-    )
-    monkeypatch.setattr(
-        "housescraper_mcp.service.save_cookies",
-        lambda domain, cookies: saved.setdefault(domain, cookies),
-    )
-
-    cookies = prepare_cookies("ke.com")
-
-    assert cookies["lianjia_ssid"] == "new"
-    assert cookies["hip"] == "ok"
-    assert saved["ke.com"]["srcid"] == "1"
-
-
 def test_search_relaxes_beike_server_filters_before_client_filtering(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("housescraper_mcp.service.prepare_cookies", lambda domain: {"session": "ok"})
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
 
     adapter = FakeAdapter(
         [
@@ -204,3 +210,177 @@ def test_search_relaxes_beike_server_filters_before_client_filtering(monkeypatch
     assert adapter.last_filters.district == ""
     assert response["result_count"] == 1
     assert response["results"][0]["title"] == "符合条件"
+
+
+def test_search_relaxes_lianjia_server_filters_before_client_filtering(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
+
+    adapter = FakeAdapter(
+        [
+            House(
+                id="1",
+                platform="lianjia",
+                title="链家符合条件",
+                price=480.0,
+                price_unit="万",
+                area=88.0,
+                layout="2室1厅",
+                district="浦东",
+                url="https://example.com/1",
+            )
+        ]
+    )
+
+    service = HouseScraperService(
+        adapter_factories={"lianjia": lambda: adapter},
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchFilter(city="上海", max_price=500, layout="2室", district="浦东"),
+            platforms=["lianjia"],
+            limit=10,
+        )
+    )
+
+    assert adapter.last_filters is not None
+    assert adapter.last_filters.max_price is None
+    assert adapter.last_filters.layout == ""
+    assert adapter.last_filters.district == ""
+    assert response["result_count"] == 1
+    assert response["results"][0]["platform"] == "lianjia"
+
+
+def test_baseline_returns_report_and_per_platform_summary(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
+
+    service = HouseScraperService(
+        adapter_factories={
+            "beike": lambda: FakeAdapter(
+                [
+                    House(
+                        id="1",
+                        platform="beike",
+                        title="基线样本",
+                        price=320.0,
+                        price_unit="万",
+                        area=78.0,
+                        layout="2室1厅",
+                        district="浦东",
+                        url="https://example.com/1",
+                    )
+                ]
+            ),
+            "lianjia": lambda: FakeAdapter(
+                [
+                    House(
+                        id="3",
+                        platform="lianjia",
+                        title="链家基线样本",
+                        price=310.0,
+                        price_unit="万",
+                        area=74.0,
+                        layout="2室1厅",
+                        district="浦东",
+                        url="https://example.com/3",
+                    )
+                ]
+            ),
+            "anjuke": lambda: FakeAdapter(
+                [
+                    House(
+                        id="2",
+                        platform="anjuke",
+                        title="安居客样本",
+                        price=300.0,
+                        price_unit="万",
+                        area=76.0,
+                        layout="2室1厅",
+                        district="浦东",
+                        url="https://example.com/2",
+                    )
+                ]
+            ),
+        },
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(
+        service.baseline(
+            city="上海",
+            platforms=["beike", "lianjia", "anjuke"],
+            search_limit=5,
+        )
+    )
+
+    assert response["ok"] is True
+    assert response["requested_platforms"] == ["beike", "lianjia", "anjuke"]
+    assert response["platform_summary"][1]["requested_platform"] == "lianjia"
+    assert response["platform_summary"][1]["platform"] == "lianjia"
+    assert Path(response["report_artifact_path"]).exists()
+
+
+def test_build_baseline_summary_combines_probe_and_search_status() -> None:
+    probe_response = {
+        "requested_platforms": ["beike", "anjuke"],
+        "results": [
+            {
+                "requested_platform": "beike",
+                "platform": "beike",
+                "ok": True,
+                "raw_result_count": 30,
+                "error_type": None,
+                "captcha_suspected": False,
+            },
+            {
+                "requested_platform": "anjuke",
+                "platform": "anjuke",
+                "ok": False,
+                "raw_result_count": 0,
+                "error_type": "captcha",
+                "captcha_suspected": True,
+            },
+        ],
+    }
+    search_response = {
+        "platform_status": [
+            {
+                "requested_platform": "beike",
+                "ok": True,
+                "result_count": 5,
+                "raw_result_count": 30,
+                "error_type": None,
+                "captcha_suspected": False,
+            },
+            {
+                "requested_platform": "anjuke",
+                "ok": False,
+                "result_count": 0,
+                "raw_result_count": 0,
+                "error_type": "captcha",
+                "captcha_suspected": True,
+            },
+        ]
+    }
+
+    summary = build_baseline_summary(probe_response, search_response)
+
+    assert summary[0]["requested_platform"] == "beike"
+    assert summary[0]["search_result_count"] == 5
+    assert summary[1]["probe_captcha_suspected"] is True
+    assert summary[1]["search_error_type"] == "captcha"
+
+
+def test_default_adapter_factories_include_separate_lianjia_adapter() -> None:
+    factories = default_adapter_factories()
+
+    assert "beike" in factories
+    assert "lianjia" in factories
+    assert "anjuke" in factories

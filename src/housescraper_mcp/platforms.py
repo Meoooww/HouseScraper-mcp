@@ -10,13 +10,20 @@ DEFAULT_PLATFORMS = ("beike", "anjuke")
 
 _PLATFORM_MAP = {
     "beike": "beike",
-    "lianjia": "beike",
+    "lianjia": "lianjia",
     "anjuke": "anjuke",
 }
 
 _COOKIE_DOMAIN_MAP = {
     "beike": "ke.com",
+    "lianjia": "lianjia.com",
     "anjuke": "anjuke.com",
+}
+
+_COOKIE_FALLBACK_DOMAIN_MAP = {
+    "beike": (),
+    "lianjia": ("ke.com",),
+    "anjuke": (),
 }
 
 
@@ -27,13 +34,13 @@ class RequestedPlatform:
     requested: str
     canonical: str
     cookie_domain: str
+    fallback_cookie_domains: tuple[str, ...] = ()
 
 
 def resolve_platforms(platforms: Iterable[str] | None) -> list[RequestedPlatform]:
     """Normalize user-supplied platform names.
 
     The first version only supports `beike`, `lianjia`, and `anjuke`.
-    `lianjia` is intentionally mapped to the `beike` adapter.
     """
 
     normalized = [name.strip().lower() for name in platforms or DEFAULT_PLATFORMS if name.strip()]
@@ -52,6 +59,7 @@ def resolve_platforms(platforms: Iterable[str] | None) -> list[RequestedPlatform
                 requested=requested,
                 canonical=canonical,
                 cookie_domain=_COOKIE_DOMAIN_MAP[canonical],
+                fallback_cookie_domains=_COOKIE_FALLBACK_DOMAIN_MAP[canonical],
             )
         )
 

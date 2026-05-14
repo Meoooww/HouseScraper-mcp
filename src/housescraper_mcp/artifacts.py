@@ -18,7 +18,7 @@ def _default_root() -> Path:
 
 
 def _safe_slug(value: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip()).strip("-")
+    slug = re.sub(r"[^\w-]+", "-", value.strip(), flags=re.UNICODE).strip("-")
     return slug or "artifact"
 
 
@@ -29,14 +29,17 @@ class ArtifactStore:
         self.root = (root or _default_root()).resolve()
 
     def write_probe_snapshot(self, requested_platform: str, payload: dict[str, Any]) -> str:
-        directory = self.root / "probe"
+        return self._write_json_snapshot("probe", requested_platform, payload)
+
+    def write_baseline_report(self, city: str, payload: dict[str, Any]) -> str:
+        return self._write_json_snapshot("baseline", city, payload)
+
+    def _write_json_snapshot(self, category: str, slug: str, payload: dict[str, Any]) -> str:
+        directory = self.root / category
         directory.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        filename = f"{timestamp}_{_safe_slug(requested_platform)}.json"
+        filename = f"{timestamp}_{_safe_slug(slug)}.json"
         path = directory / filename
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(path)

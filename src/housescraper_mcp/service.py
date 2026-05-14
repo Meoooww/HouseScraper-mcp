@@ -6,20 +6,17 @@ import asyncio
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Protocol
 
 from house_cli.client.adapters import ADAPTER_REGISTRY
-from house_cli.client.auth import (
-    _try_browser_cookie3,
-    get_cookies,
-    load_or_extract_cookies,
-    save_cookies,
-)
 from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
 
+from housescraper_mcp.adapters import BeikeClient, LianjiaClient
 from housescraper_mcp.artifacts import ArtifactStore
+from housescraper_mcp.cookies import prepare_cookies
 from housescraper_mcp.platforms import RequestedPlatform, group_by_canonical, resolve_platforms
 
 
@@ -31,6 +28,7 @@ class SearchAdapter(Protocol):
 
 
 AdapterFactory = Callable[[], SearchAdapter]
+DEFAULT_BASELINE_PLATFORMS = ["beike", "lianjia", "anjuke"]
 
 
 @dataclass(slots=True)
@@ -72,7 +70,8 @@ def default_adapter_factories() -> dict[str, AdapterFactory]:
     """Return the upstream adapters used in the first MVP."""
 
     return {
-        "beike": ADAPTER_REGISTRY["beike"],
+        "beike": BeikeClient,
+        "lianjia": LianjiaClient,
         "anjuke": ADAPTER_REGISTRY["anjuke"],
     }
 
@@ -119,7 +118,7 @@ def upstream_filters_for_platform(canonical: str, filters: SearchFilter) -> Sear
     filtering over a brittle server-side query that often fails entirely.
     """
 
-    if canonical != "beike" or not client_side_filtering_applied(filters):
+    if canonical not in {"beike", "lianjia"} or not client_side_filtering_applied(filters):
         return filters
 
     return SearchFilter(
@@ -145,30 +144,6 @@ def classify_error(exc: Exception) -> tuple[str, bool]:
     return "adapter_error", False
 
 
-def prepare_cookies(domain: str) -> dict[str, str]:
-    """Refresh cached cookies from the browser when a partial file entry exists.
-
-    `house-cli` stops at the cookie file as soon as it finds any non-expired entry.
-    That is a problem for ke.com because one stale session cookie can block the
-    fallback browser extraction path forever. We merge cached cookies with the
-    browser view first, then persist the richer set for the upstream adapter.
-    """
-
-    file_cookies = get_cookies(domain)
-    browser_cookies = _try_browser_cookie3(domain)
-
-    if browser_cookies:
-        merged = {**file_cookies, **browser_cookies}
-        if merged != file_cookies:
-            save_cookies(domain, merged)
-        return merged
-
-    if file_cookies:
-        return file_cookies
-
-    return load_or_extract_cookies(domain)
-
-
 def filter_houses(houses: list[House], filters: SearchFilter) -> list[House]:
     """Apply client-side filters when upstream fallback pages ignore constraints."""
 
@@ -189,6 +164,42 @@ def client_side_filtering_applied(filters: SearchFilter) -> bool:
             filters.layout,
         )
     )
+
+
+def build_baseline_summary(
+    probe_response: Mapping[str, Any],
+    search_response: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Flatten probe/search responses into a stable per-platform health summary."""
+
+    probe_by_requested = {
+        result["requested_platform"]: result for result in probe_response.get("results", [])
+    }
+    search_by_requested = {
+        result["requested_platform"]: result
+        for result in search_response.get("platform_status", [])
+    }
+
+    summary: list[dict[str, Any]] = []
+    for requested_platform in probe_response.get("requested_platforms", []):
+        probe_status = probe_by_requested[requested_platform]
+        search_status = search_by_requested.get(requested_platform, {})
+        summary.append(
+            {
+                "requested_platform": requested_platform,
+                "platform": probe_status["platform"],
+                "probe_ok": probe_status["ok"],
+                "probe_raw_result_count": probe_status["raw_result_count"],
+                "probe_error_type": probe_status["error_type"],
+                "probe_captcha_suspected": probe_status["captcha_suspected"],
+                "search_ok": search_status.get("ok", False),
+                "search_result_count": search_status.get("result_count", 0),
+                "search_raw_result_count": search_status.get("raw_result_count", 0),
+                "search_error_type": search_status.get("error_type"),
+                "search_captcha_suspected": search_status.get("captcha_suspected", False),
+            }
+        )
+    return summary
 
 
 def _matches_filters(house: House, filters: SearchFilter) -> bool:
@@ -300,6 +311,68 @@ class HouseScraperService:
             "results": houses[:limit],
         }
 
+    async def baseline(
+        self,
+        *,
+        city: str = "上海",
+        platforms: Iterable[str] | None = None,
+        max_price: float = 500.0,
+        layout: str = "2室",
+        listing_type: str = "buy",
+        page: int = 1,
+        sample_limit: int = 3,
+        search_limit: int = 5,
+    ) -> dict[str, Any]:
+        """Run a repeatable live baseline for all supported platforms."""
+
+        requested_platforms = list(platforms or DEFAULT_BASELINE_PLATFORMS)
+        probe_filters = build_search_filter(
+            city=city,
+            listing_type=listing_type,
+            page=page,
+        )
+        search_filters = build_search_filter(
+            city=city,
+            max_price=max_price,
+            layout=layout,
+            listing_type=listing_type,
+            page=page,
+        )
+
+        probe_response = await self.probe(
+            probe_filters,
+            platforms=requested_platforms,
+            sample_limit=sample_limit,
+        )
+        search_response = await self.search(
+            search_filters,
+            platforms=requested_platforms,
+            limit=search_limit,
+        )
+        platform_summary = build_baseline_summary(probe_response, search_response)
+
+        payload = {
+            "ok": bool(platform_summary)
+            and all(item["probe_ok"] and item["search_ok"] for item in platform_summary),
+            "generated_at": datetime.now(UTC).isoformat(),
+            "city": city,
+            "requested_platforms": requested_platforms,
+            "search_scenario": {
+                "max_price": max_price,
+                "layout": layout,
+                "listing_type": listing_type,
+                "page": page,
+                "search_limit": search_limit,
+            },
+            "platform_summary": platform_summary,
+            "checks": {
+                "probe": probe_response,
+                "filtered_search": search_response,
+            },
+        }
+        payload["report_artifact_path"] = self.artifact_store.write_baseline_report(city, payload)
+        return payload
+
     async def _run_platforms(
         self,
         filters: SearchFilter,
@@ -307,7 +380,7 @@ class HouseScraperService:
     ) -> dict[str, PlatformExecution]:
         grouped = group_by_canonical(targets)
         tasks = {
-            canonical: self._execute_search(canonical, filters, requested_targets[0].cookie_domain)
+            canonical: self._execute_search(canonical, filters, requested_targets[0])
             for canonical, requested_targets in grouped.items()
         }
         outcomes = await asyncio.gather(*tasks.values())
@@ -317,13 +390,18 @@ class HouseScraperService:
         self,
         canonical: str,
         filters: SearchFilter,
-        cookie_domain: str,
+        target: RequestedPlatform,
     ) -> PlatformExecution:
         factory = self.adapter_factories.get(canonical)
         if factory is None:
             raise ValueError(f"No adapter configured for platform: {canonical}")
 
-        cookies_detected = bool(prepare_cookies(cookie_domain))
+        cookies_detected = bool(
+            prepare_cookies(
+                target.cookie_domain,
+                fallback_domains=target.fallback_cookie_domains,
+            )
+        )
         start = monotonic()
         adapter = factory()
         upstream_filters = upstream_filters_for_platform(canonical, filters)

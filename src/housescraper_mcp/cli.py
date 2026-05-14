@@ -36,11 +36,33 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=int, default=20)
     search.add_argument("--sort-by", default="default")
 
+    baseline = subparsers.add_parser("baseline", help="Run live multi-platform baseline")
+    baseline.add_argument("--city", default="上海")
+    baseline.add_argument("--platform", action="append", dest="platforms", default=[])
+    baseline.add_argument("--max-price", type=float, dest="max_price", default=500.0)
+    baseline.add_argument("--layout", default="2室")
+    baseline.add_argument("--listing-type", choices=["buy", "rent"], default="buy")
+    baseline.add_argument("--page", type=int, default=1)
+    baseline.add_argument("--sample-limit", type=int, default=3)
+    baseline.add_argument("--search-limit", type=int, default=5)
+
     return parser
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     service = HouseScraperService()
+    if args.command == "baseline":
+        return await service.baseline(
+            city=args.city,
+            platforms=args.platforms or None,
+            max_price=args.max_price,
+            layout=args.layout,
+            listing_type=args.listing_type,
+            page=args.page,
+            sample_limit=args.sample_limit,
+            search_limit=args.search_limit,
+        )
+
     filters = build_search_filter(
         city=args.city,
         district=args.district,
