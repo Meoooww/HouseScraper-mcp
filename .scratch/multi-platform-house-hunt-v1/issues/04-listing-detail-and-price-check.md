@@ -15,6 +15,12 @@ Add a detail lookup workflow for a selected listing so the user can verify a pri
 
 ## Blocked by
 
-- `.scratch/multi-platform-house-hunt-v1/issues/01-live-baseline-and-regression.md`
+- `.scratch/multi-platform-house-hunt-v1/issues/06-agent-friendly-search-contract.md`
 
 ## Comments
+
+2026-05-14 progress audit:
+
+- Not implemented in the local MCP or local smoke-test CLI.
+- The current server only exposes `probe_sources` and `search_listings`.
+- Some upstream adapter code already has platform detail methods, but this repo does not yet normalize and expose a listing-detail workflow for agents.

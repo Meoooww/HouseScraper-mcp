@@ -8,10 +8,10 @@ Add a repeatable live baseline workflow that probes `beike`, `lianjia`, and `anj
 
 ## Acceptance criteria
 
-- [ ] There is a single local command that runs a baseline check for all supported platforms.
-- [ ] The command returns platform-by-platform status that is easy to compare over time.
-- [ ] The baseline output is saved to an artifact or report location for later inspection.
-- [ ] The repo documents how to run the baseline and what a healthy result looks like.
+- [x] There is a single local command that runs a baseline check for all supported platforms.
+- [x] The command returns platform-by-platform status that is easy to compare over time.
+- [x] The baseline output is saved to an artifact or report location for later inspection.
+- [x] The repo documents how to run the baseline and what a healthy result looks like.
 
 ## Blocked by
 
@@ -25,3 +25,5 @@ None - can start immediately.
 - Added `artifacts/baseline/` report output plus per-platform `platform_summary`.
 - `lianjia` is now a separate adapter and separate test target instead of a `beike` alias.
 - Latest live run on this machine returned healthy results for `beike`, `lianjia`, and `anjuke`.
+- Progress audit: all acceptance criteria are satisfied by the current CLI, service layer, README, and test suite.
+- Local verification: `uv run pytest -q` passed (`15 passed`).

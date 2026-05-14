@@ -15,6 +15,12 @@ Add keyword search oriented around community names, building names, and user-ent
 
 ## Blocked by
 
-- `.scratch/multi-platform-house-hunt-v1/issues/01-live-baseline-and-regression.md`
+- `.scratch/multi-platform-house-hunt-v1/issues/06-agent-friendly-search-contract.md`
 
 ## Comments
+
+2026-05-14 progress audit:
+
+- Not started in the local MCP layer.
+- The current MCP server and local CLI do not expose a keyword or community-name search parameter.
+- The upstream `SearchFilter` model includes a `keywords` field, but this repo does not currently pass it through or report which fields matched.

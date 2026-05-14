@@ -19,3 +19,9 @@ Add a shortlist export workflow so the user can take filtered and verified candi
 - `.scratch/multi-platform-house-hunt-v1/issues/04-listing-detail-and-price-check.md`
 
 ## Comments
+
+2026-05-14 progress audit:
+
+- Not started in this repo's MCP or local CLI surface.
+- There is no shortlist export workflow documented or exposed from the local `housescraper-cli`.
+- The upstream `house-cli` dependency has its own export command, but that capability is not yet wired into this repo's candidate-screening workflow.
