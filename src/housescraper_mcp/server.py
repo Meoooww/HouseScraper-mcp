@@ -47,6 +47,7 @@ async def probe_sources(
 async def search_listings(
     city: str = "上海",
     platforms: list[str] | None = None,
+    keyword: str = "",
     district: str = "",
     min_price: float | None = None,
     max_price: float | None = None,
@@ -69,6 +70,7 @@ async def search_listings(
         layout=layout,
         listing_type=listing_type,
         page=page,
+        keywords=keyword,
     )
     return await service.search(filters, platforms=platforms, limit=limit)
 

@@ -237,6 +237,77 @@ def test_search_returns_no_results_when_filters_eliminate_all_matches(monkeypatc
     assert response["data"] == []
 
 
+def test_search_filters_by_keyword_and_exposes_match_fields(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
+
+    beike_adapter = FakeAdapter(
+        [
+            House(
+                id="1",
+                platform="beike",
+                title="世茂滨江花园南向两房",
+                price=500.0,
+                price_unit="万",
+                area=89.0,
+                layout="2室1厅",
+                community="世茂滨江花园",
+                district="浦东",
+                url="https://example.com/beike/1",
+            )
+        ]
+    )
+    anjuke_adapter = FakeAdapter(
+        [
+            House(
+                id="2",
+                platform="anjuke",
+                title="张江独立次新房",
+                price=430.0,
+                price_unit="万",
+                area=78.0,
+                layout="2室1厅",
+                community="张江花园",
+                district="浦东",
+                url="https://example.com/anjuke/2",
+            )
+        ]
+    )
+
+    service = HouseScraperService(
+        adapter_factories={
+            "beike": lambda: beike_adapter,
+            "anjuke": lambda: anjuke_adapter,
+        },
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchFilter(city="上海", keywords="世茂滨江花园"),
+            platforms=["beike", "anjuke"],
+            limit=10,
+        )
+    )
+
+    assert beike_adapter.last_filters is not None
+    assert anjuke_adapter.last_filters is not None
+    assert beike_adapter.last_filters.keywords == ""
+    assert anjuke_adapter.last_filters.keywords == "世茂滨江花园"
+    assert response["status"] == "success"
+    assert response["meta"]["raw_count"] == 1
+    assert response["meta"]["returned_count"] == 1
+    assert response["meta"]["platforms"][0]["result_count"] == 1
+    assert response["meta"]["platforms"][1]["result_count"] == 0
+    assert response["meta"]["platforms"][0]["filter_mode"] == "post_filtered"
+    assert response["meta"]["platforms"][1]["filter_mode"] == "post_filtered"
+    assert response["data"][0]["listing_ref"] == "beike:1"
+    assert response["data"][0]["keyword_match"]["keyword"] == "世茂滨江花园"
+    assert response["data"][0]["keyword_match"]["matched_fields"] == ["title", "community"]
+
+
 def test_search_marks_possible_duplicates_and_moves_them_after_primary_results(
     monkeypatch, tmp_path: Path
 ) -> None:

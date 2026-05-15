@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     def add_common_arguments(target: argparse.ArgumentParser) -> None:
         target.add_argument("--city", default="上海")
         target.add_argument("--platform", action="append", dest="platforms", default=[])
+        target.add_argument("--keyword", default="")
         target.add_argument("--district", default="")
         target.add_argument("--min-price", type=float, dest="min_price")
         target.add_argument("--max-price", type=float, dest="max_price")
@@ -72,6 +73,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         layout=args.layout,
         listing_type=args.listing_type,
         page=args.page,
+        keywords=args.keyword,
     )
     platforms = args.platforms or None
     if args.command == "probe":

@@ -88,6 +88,7 @@ def build_search_filter(
     listing_type: str = "buy",
     page: int = 1,
     sort_by: str = "default",
+    keywords: str = "",
 ) -> SearchFilter:
     """Build the shared upstream filter model."""
 
@@ -107,6 +108,7 @@ def build_search_filter(
         listing_type=listing_type,
         page=page,
         sort_by=sort_by,
+        keywords=keywords,
     )
 
 
@@ -162,6 +164,7 @@ def client_side_filtering_applied(filters: SearchFilter) -> bool:
             filters.min_area,
             filters.max_area,
             filters.layout,
+            filters.keywords,
         )
     )
 
@@ -232,6 +235,8 @@ def platform_filter_mode(canonical: str, filters: SearchFilter) -> str:
 
     if not client_side_filtering_applied(filters):
         return "default"
+    if filters.keywords:
+        return "post_filtered"
     if canonical in {"beike", "lianjia"}:
         return "post_filtered"
     return "native"
@@ -259,6 +264,21 @@ def listing_ref(listing: Mapping[str, Any]) -> str:
     """Build a stable agent-facing listing reference."""
 
     return f"{listing['platform']}:{listing['id']}"
+
+
+def attach_keyword_match(listing: dict[str, Any], keyword: str) -> dict[str, Any]:
+    """Attach keyword match visibility for search results."""
+
+    if not keyword:
+        return listing
+
+    matched_fields = keyword_match_fields(listing, keyword)
+    if matched_fields:
+        listing["keyword_match"] = {
+            "keyword": keyword,
+            "matched_fields": matched_fields,
+        }
+    return listing
 
 
 def annotate_duplicates(listings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -328,6 +348,26 @@ def normalize_district(value: str) -> str:
     return normalized
 
 
+def keyword_match_fields(listing: Mapping[str, Any], keyword: str) -> list[str]:
+    """Return the visible fields that matched the requested keyword."""
+
+    normalized_keyword = normalize_text(keyword)
+    if not normalized_keyword:
+        return []
+
+    matches: list[str] = []
+    for field in ("title", "community", "address", "district"):
+        value = str(listing.get(field, "") or "")
+        if normalized_keyword in normalize_text(value):
+            matches.append(field)
+
+    tags = listing.get("tags", [])
+    if any(normalized_keyword in normalize_text(str(tag)) for tag in tags):
+        matches.append("tags")
+
+    return matches
+
+
 def _matches_filters(house: House, filters: SearchFilter) -> bool:
     if filters.district:
         if not house.district or filters.district not in house.district:
@@ -352,6 +392,18 @@ def _matches_filters(house: House, filters: SearchFilter) -> bool:
             return False
         if expected_rooms is None and filters.layout not in house.layout:
             return False
+
+    if filters.keywords and not keyword_match_fields(
+        {
+            "title": house.title,
+            "community": house.community,
+            "address": house.address,
+            "district": house.district,
+            "tags": house.tags,
+        },
+        filters.keywords,
+    ):
+        return False
 
     return True
 
@@ -427,7 +479,10 @@ class HouseScraperService:
         platform_status = [executions[target.canonical].to_status(target) for target in targets]
         houses: list[dict[str, Any]] = []
         for canonical in self._requested_order(targets):
-            houses.extend(asdict(house) for house in executions[canonical].houses)
+            houses.extend(
+                attach_keyword_match(asdict(house), filters.keywords)
+                for house in executions[canonical].houses
+            )
 
         annotated_houses, possible_duplicate_count = annotate_duplicates(houses)
         returned_houses = annotated_houses[:limit]

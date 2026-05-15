@@ -88,6 +88,7 @@ uv run housescraper-mcp
 {
   "city": "上海",
   "platforms": ["anjuke"],
+  "keyword": "世茂滨江花园",
   "max_price": 500,
   "layout": "2室",
   "listing_type": "buy",
@@ -103,6 +104,7 @@ uv run housescraper-mcp
 - `data[*].listing_ref`：稳定房源引用，例如 `beike:107114117310`
 - `data[*].duplicate_id`：如果当前房源疑似重复，会指向保留主房源的 `listing_ref`
 - `meta.platforms[*].filter_mode`：标记平台是 `default`、`native` 还是 `post_filtered`
+- `data[*].keyword_match.matched_fields`：当使用 `keyword` 搜索时，展示命中了 `title`、`community`、`address`、`district`、`tags` 中的哪些字段
 
 ## 不通过 MCP，直接本地调用
 
@@ -119,7 +121,7 @@ uv run housescraper-cli probe --city 上海 --platform anjuke
 
 ```bash
 cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
-uv run housescraper-cli search --city 上海 --platform anjuke --max-price 500 --layout 2室 --limit 5
+uv run housescraper-cli search --city 上海 --platform anjuke --keyword 世茂滨江花园 --max-price 500 --layout 2室 --limit 5
 ```
 
 验证多平台聚合 + 去重行为：
@@ -144,6 +146,26 @@ uv run housescraper-cli search \
 - `data[*].duplicate_id` 为 `null` 时表示主房源；有值时表示它被判定为重复，并且值会指向主房源的 `listing_ref`
 - 疑似重复房源会被移动到主房源之后，但仍然计入 `limit`
 - `meta.platforms[*].raw_result_count` 可帮助判断平台原始抓取量与最终返回量的差异
+
+验证已知小区 / 楼盘关键词搜索：
+
+```bash
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+uv run housescraper-cli search \
+  --city 上海 \
+  --platform beike \
+  --platform lianjia \
+  --platform anjuke \
+  --keyword 世茂滨江花园 \
+  --limit 10
+```
+
+检查重点：
+
+- `data` 里应优先保留与 `世茂滨江花园` 相关的结果
+- `data[*].keyword_match.matched_fields` 应明确展示是命中了 `title`、`community` 还是其他字段
+- `meta.platforms[*].result_count` 可以帮助判断每个平台最终留下了多少条匹配结果
+- `meta.platforms[*].raw_result_count` 则能反映平台原始返回量，便于区分“上游就很少”还是“本地二次过滤后变少”
 
 运行实时回归基线：
 
@@ -185,6 +207,7 @@ uv run housescraper-cli probe --city 上海 --platform anjuke
 - `beike` 主要读取 `ke.com` cookie。
 - `lianjia` 优先读取 `lianjia.com` cookie；如果浏览器里还没有链家自己的 cookie，会回退复用 `ke.com` 的共享登录票据。
 - `beike` / `lianjia` 带筛选条件时，当前会优先抓基础列表页，再在本地做价格 / 面积 / 户型 / 区域过滤，目的是降低验证码触发概率。
+- 关键词搜索当前也遵循同样的保守策略：会尽量把 `keyword` 传给支持的平台，同时继续在本地做一致性的二次校验，并在结果里显式标出匹配字段。
 - 多平台去重目前是保守的 advisory heuristic：主要依赖跨平台 `community + district + area` 近似匹配，只做标记和排序，不会把不同来源硬合并成一条记录。
 - `lianjia` 列表页里的区位字段更接近商圈/板块，不一定总是行政区。
-- 第一版还不支持“按楼盘名精确搜索”，目前更适合按城市、区域、总价、面积、户型做海选。
+- 第一版的关键词搜索更适合“已知小区 / 楼盘名”的精确或半精确命中，还不适合复杂自然语言检索。
