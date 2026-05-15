@@ -18,6 +18,13 @@
 - Python `3.12`
 - `uv`
 
+获取代码（首次）：
+
+```bash
+git clone <YOUR_REPO_URL> /Users/ljh/Documents/GitHub/HouseScraper-mcp
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+```
+
 初始化依赖：
 
 ```bash
@@ -60,6 +67,20 @@ uv run housescraper-mcp
 
 接入后可直接调用两个工具：`probe_sources` 和 `search_listings`。
 现在也支持第三个工具：`get_listing_detail`。
+
+### 在 Codex Desktop 中注册
+
+![Codex MCP STDIO 配置示例](docs/images/codex-mcp-stdio.png)
+
+最少配置：
+
+- `Name`: `housescraper`
+- `STDIO`
+- `Command to launch`: `uv`
+- `Arguments`: `run`, `housescraper-mcp`
+- `Working directory`: `/Users/ljh/Documents/GitHub/HouseScraper-mcp`
+
+点 `Save` 后重开会话即可。
 
 ## 怎么调用
 
