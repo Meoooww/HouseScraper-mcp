@@ -15,3 +15,10 @@ def test_search_cli_accepts_keyword_argument() -> None:
 
     assert args.command == "search"
     assert args.keyword == "世茂滨江花园"
+
+
+def test_detail_cli_accepts_listing_ref_argument() -> None:
+    args = build_parser().parse_args(["detail", "--listing-ref", "beike:107114117310"])
+
+    assert args.command == "detail"
+    assert args.listing_ref == "beike:107114117310"

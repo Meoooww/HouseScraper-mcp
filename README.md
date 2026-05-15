@@ -8,6 +8,8 @@
   作用：探测平台当前是否可抓取，返回样本数据、cookie 状态、是否疑似触发反爬。
 - `search_listings`
   作用：执行一次基础房源搜索，返回统一结构的结果，并在多平台聚合时标记疑似重复房源。
+- `get_listing_detail`
+  作用：根据稳定的 `listing_ref` 拉取单条房源详情，用于价格和元数据核验。
 
 ## 环境准备
 
@@ -57,6 +59,7 @@ uv run housescraper-mcp
 ```
 
 接入后可直接调用两个工具：`probe_sources` 和 `search_listings`。
+现在也支持第三个工具：`get_listing_detail`。
 
 ## 怎么调用
 
@@ -106,6 +109,24 @@ uv run housescraper-mcp
 - `meta.platforms[*].filter_mode`：标记平台是 `default`、`native` 还是 `post_filtered`
 - `data[*].keyword_match.matched_fields`：当使用 `keyword` 搜索时，展示命中了 `title`、`community`、`address`、`district`、`tags` 中的哪些字段
 
+### 3. 核验单条房源详情
+
+示例参数：
+
+```json
+{
+  "listing_ref": "beike:107114117310"
+}
+```
+
+返回重点：
+
+- `status`：`success` 或 `error`
+- `meta.listing_ref`：本次核验的稳定房源引用
+- `meta.platform`：详情来源平台
+- `meta.error_type` / `meta.error_message`：当详情页因 cookie 或反爬不可访问时，给出机器可读错误
+- `data.price`、`data.unit_price`、`data.community`、`data.layout`、`data.area`：适合手机侧快速对照的核心字段
+
 ## 不通过 MCP，直接本地调用
 
 为了方便本地 smoke test，仓库里还提供了一个轻量 CLI。
@@ -122,6 +143,13 @@ uv run housescraper-cli probe --city 上海 --platform anjuke
 ```bash
 cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
 uv run housescraper-cli search --city 上海 --platform anjuke --keyword 世茂滨江花园 --max-price 500 --layout 2室 --limit 5
+```
+
+核验单条房源详情：
+
+```bash
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+uv run housescraper-cli detail --listing-ref beike:107114117310
 ```
 
 验证多平台聚合 + 去重行为：
@@ -167,6 +195,32 @@ uv run housescraper-cli search \
 - `meta.platforms[*].result_count` 可以帮助判断每个平台最终留下了多少条匹配结果
 - `meta.platforms[*].raw_result_count` 则能反映平台原始返回量，便于区分“上游就很少”还是“本地二次过滤后变少”
 
+验证单条详情核验：
+
+建议用一个刚刚通过搜索拿到的 `listing_ref` 做 spot check。下面是一条适合本地复现的流程：
+
+```bash
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+uv run housescraper-cli search \
+  --city 上海 \
+  --platform beike \
+  --keyword 世茂滨江花园 \
+  --limit 1
+```
+
+从返回结果里复制第一条 `data[0].listing_ref`，然后继续：
+
+```bash
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+uv run housescraper-cli detail --listing-ref beike:107114117310
+```
+
+检查重点：
+
+- `data.price`、`data.unit_price`、`data.community`、`data.layout` 是否足够做手机侧价格比对
+- `data.url` 是否指向原始详情页，便于人工二次核验
+- 如果当前机器 cookie 失效或被反爬拦截，返回应该是 `status = error`，并带 `meta.error_type` / `meta.error_message`
+
 运行实时回归基线：
 
 ```bash
@@ -209,5 +263,6 @@ uv run housescraper-cli probe --city 上海 --platform anjuke
 - `beike` / `lianjia` 带筛选条件时，当前会优先抓基础列表页，再在本地做价格 / 面积 / 户型 / 区域过滤，目的是降低验证码触发概率。
 - 关键词搜索当前也遵循同样的保守策略：会尽量把 `keyword` 传给支持的平台，同时继续在本地做一致性的二次校验，并在结果里显式标出匹配字段。
 - 多平台去重目前是保守的 advisory heuristic：主要依赖跨平台 `community + district + area` 近似匹配，只做标记和排序，不会把不同来源硬合并成一条记录。
+- 详情核验当前依赖本机浏览器里已有的真实登录态和 cookie；如果 cookie 过期或详情页触发反爬，服务会返回结构化错误而不是伪造空详情。
 - `lianjia` 列表页里的区位字段更接近商圈/板块，不一定总是行政区。
 - 第一版的关键词搜索更适合“已知小区 / 楼盘名”的精确或半精确命中，还不适合复杂自然语言检索。

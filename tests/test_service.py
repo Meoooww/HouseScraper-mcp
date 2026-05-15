@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
+from house_cli.models.house import HouseDetail
 
 from housescraper_mcp.artifacts import ArtifactStore
 from housescraper_mcp.service import (
@@ -26,6 +27,21 @@ class FakeAdapter:
         return self._houses
 
 
+class FakeDetailAdapter(FakeAdapter):
+    def __init__(self, detail: HouseDetail | None = None, error: Exception | None = None) -> None:
+        super().__init__(houses=[], error=error)
+        self._detail = detail
+        self.last_detail_id: str | None = None
+
+    async def detail(self, house_id: str) -> HouseDetail:
+        self.last_detail_id = house_id
+        if self._error is not None:
+            raise self._error
+        if self._detail is None:
+            raise RuntimeError("detail missing")
+        return self._detail
+
+
 def test_search_rejects_page_above_3(tmp_path: Path) -> None:
     service = HouseScraperService(
         adapter_factories={"beike": lambda: FakeAdapter()},
@@ -44,6 +60,97 @@ def test_search_rejects_limit_above_30(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="limit must be <= 30"):
         asyncio.run(service.search(SearchFilter(city="上海"), platforms=["beike"], limit=31))
+
+
+def test_detail_returns_structured_fields_for_listing_ref(tmp_path: Path) -> None:
+    adapter = FakeDetailAdapter(
+        detail=HouseDetail(
+            id="107114117310",
+            platform="beike",
+            title="世茂滨江花园南向两房",
+            price=1249.0,
+            price_unit="万",
+            area=143.2,
+            unit_price=87221.0,
+            layout="2室2厅",
+            floor="低楼层",
+            orientation="东 南",
+            community="世茂滨江花园",
+            district="浦东",
+            city="上海",
+            address="陆家嘴 世茂滨江花园",
+            url="https://sh.ke.com/ershoufang/107114117310.html",
+            listing_date="7月前发布",
+            tags=["必看好房", "近地铁"],
+            description="正南大客厅，落地窗森系景观。",
+            building_year="2004年",
+            building_type="塔楼",
+            elevator="有",
+            parking="充足",
+            green_ratio="35%",
+            volume_ratio="2.5",
+            property_fee="6元/平/月",
+            nearby_schools=["明珠小学"],
+            nearby_subway=["2号线陆家嘴"],
+            price_history=[],
+            images=["https://example.com/1.jpg"],
+        )
+    )
+
+    service = HouseScraperService(
+        adapter_factories={"beike": lambda: adapter},
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(service.detail("beike:107114117310"))
+
+    assert adapter.last_detail_id == "107114117310"
+    assert response["status"] == "success"
+    assert response["meta"]["platform"] == "beike"
+    assert response["meta"]["listing_ref"] == "beike:107114117310"
+    assert response["data"]["listing_ref"] == "beike:107114117310"
+    assert response["data"]["title"] == "世茂滨江花园南向两房"
+    assert response["data"]["price"] == 1249.0
+    assert response["data"]["unit_price"] == 87221.0
+    assert response["data"]["community"] == "世茂滨江花园"
+    assert response["data"]["layout"] == "2室2厅"
+
+
+def test_detail_surfaces_platform_errors_for_missing_cookies(tmp_path: Path) -> None:
+    adapter = FakeDetailAdapter(error=RuntimeError("cookie missing"))
+
+    service = HouseScraperService(
+        adapter_factories={"anjuke": lambda: adapter},
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(service.detail("anjuke:S123"))
+
+    assert adapter.last_detail_id == "S123"
+    assert response["status"] == "error"
+    assert response["meta"]["listing_ref"] == "anjuke:S123"
+    assert response["meta"]["platform"] == "anjuke"
+    assert response["meta"]["error_type"] == "missing_cookies"
+    assert response["meta"]["error_message"] == "cookie missing"
+    assert response["data"] is None
+
+
+def test_detail_surfaces_platform_errors_for_captcha(tmp_path: Path) -> None:
+    adapter = FakeDetailAdapter(error=RuntimeError("captcha required"))
+
+    service = HouseScraperService(
+        adapter_factories={"beike": lambda: adapter},
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(service.detail("beike:107114117310"))
+
+    assert adapter.last_detail_id == "107114117310"
+    assert response["status"] == "error"
+    assert response["meta"]["platform"] == "beike"
+    assert response["meta"]["error_type"] == "captcha"
+    assert response["meta"]["error_message"] == "captcha required"
+    assert response["data"] is None
 
 
 def test_probe_returns_status_and_artifact(monkeypatch, tmp_path: Path) -> None:

@@ -75,6 +75,13 @@ async def search_listings(
     return await service.search(filters, platforms=platforms, limit=limit)
 
 
+@mcp.tool()
+async def get_listing_detail(listing_ref: str) -> dict:
+    """Fetch structured detail for a selected listing reference."""
+
+    return await service.detail(listing_ref)
+
+
 def main() -> None:
     """Run the server, defaulting to stdio transport for local MCP clients."""
 

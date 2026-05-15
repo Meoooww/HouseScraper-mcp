@@ -10,6 +10,7 @@ from house_cli.client.auth import save_cookies
 from house_cli.models.cities import CITY_ABBR, DISTRICTS
 from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
+from house_cli.models.house import HouseDetail
 
 from housescraper_mcp.cookies import prepare_cookies
 
@@ -99,9 +100,45 @@ class KeFamilyClient:
 
         return self._parse_list(html, filters.city)
 
+    async def detail(self, house_id: str) -> HouseDetail:
+        """Fetch a structured detail page for a selected listing."""
+
+        city_abbr = "sh"
+        url = f"https://{city_abbr}.{self.site_domain}/ershoufang/{house_id}.html"
+        referer = f"https://{city_abbr}.{self.site_domain}/ershoufang/"
+        cookies = prepare_cookies(
+            self.cookie_domain,
+            fallback_domains=self.fallback_cookie_domains,
+        )
+        if not cookies:
+            domains = ", ".join((self.cookie_domain, *self.fallback_cookie_domains))
+            raise RuntimeError(
+                f"Detail pages require browser cookies. Please visit {domains} in your browser first."
+            )
+
+        async with HttpClient(referer=referer) as client:
+            resp = await client.get(url, cookies=cookies)
+            if resp.cookies:
+                merged = {**cookies, **{key: value for key, value in resp.cookies.items()}}
+                save_cookies(self.cookie_domain, merged)
+            html = resp.text
+
+        if self._looks_like_detail_captcha(html):
+            domains = ", ".join((self.cookie_domain, *self.fallback_cookie_domains))
+            raise RuntimeError(
+                f"{self.site_domain} returned CAPTCHA for detail page. "
+                f"Please visit {domains} in your browser first."
+            )
+
+        return self._parse_detail(html, house_id, city_abbr)
+
     def _looks_like_captcha(self, html: str) -> bool:
         title = _extract_title(html).upper()
         return title == "CAPTCHA" or "sellListContent" not in html or 'class="priceInfo"' not in html
+
+    def _looks_like_detail_captcha(self, html: str) -> bool:
+        title = _extract_title(html).upper()
+        return title == "CAPTCHA" or len(html) < 5000
 
     def _parse_list(self, html: str, city: str) -> list[House]:
         container_match = re.search(
@@ -119,6 +156,157 @@ class KeFamilyClient:
             if house is not None:
                 houses.append(house)
         return houses
+
+    def _parse_detail(self, html: str, house_id: str, city_abbr: str) -> HouseDetail:
+        title_match = re.search(r'<h1[^>]*class="main"[^>]*>([^<]+)', html)
+        if title_match is None:
+            title_match = re.search(r"<title>([^<]+)", html)
+        title = _clean(title_match.group(1)) if title_match is not None else ""
+
+        price = 0.0
+        price_match = re.search(r'class="total">\s*([\d.]+)\s*</span>', html)
+        if price_match is None:
+            price_match = re.search(r'class="totalPrice[^"]*">\s*<span[^>]*>\s*([\d.]+)', html)
+        if price_match is not None:
+            price = float(price_match.group(1))
+
+        unit_price = None
+        unit_price_match = re.search(r'class="unitPriceValue">\s*([\d,.]+)', html)
+        if unit_price_match is not None:
+            unit_price = float(unit_price_match.group(1).replace(",", ""))
+
+        area = 0.0
+        layout = ""
+        floor = ""
+        orientation = ""
+        building_type = ""
+        building_year = ""
+        elevator = ""
+        property_fee = ""
+        green_ratio = ""
+        volume_ratio = ""
+        parking = ""
+
+        info_items = re.findall(
+            r'<span class="label">\s*([^<]+)</span>\s*(?:<span>)?\s*([^<]+)',
+            html,
+        )
+        for label, value in info_items:
+            label = label.strip()
+            value = value.strip()
+            if "面积" in label:
+                match = re.search(r"([\d.]+)", value)
+                if match is not None:
+                    area = float(match.group(1))
+            elif "户型" in label:
+                layout = value
+            elif "楼层" in label or "所在楼层" in label:
+                floor = value
+            elif "朝向" in label:
+                orientation = value
+            elif "建筑" in label and "年" not in label:
+                building_type = value
+            elif "年代" in label or "建成" in label:
+                building_year = value
+            elif "电梯" in label:
+                elevator = value
+            elif "物业费" in label:
+                property_fee = value
+            elif "绿化率" in label:
+                green_ratio = value
+            elif "容积率" in label:
+                volume_ratio = value
+            elif "车位" in label or "停车" in label:
+                parking = value
+
+        community = ""
+        community_match = re.search(
+            r'class="communityName"[^>]*>.*?<a[^>]*>([^<]+)',
+            html,
+            re.DOTALL,
+        )
+        if community_match is not None:
+            community = _clean(community_match.group(1))
+
+        district = ""
+        address = ""
+        area_info = re.search(r'class="areaName"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if area_info is not None:
+            links = re.findall(r">([^<]+)</a>", area_info.group(1))
+            if links:
+                district = _clean(links[0])
+                address = " ".join(_clean(link) for link in links)
+
+        nearby_subway: list[str] = []
+        subway_match = re.search(r'class="subwayInfo"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if subway_match is not None:
+            nearby_subway = [
+                _clean(value) for value in re.findall(r">([^<]+)</a>", subway_match.group(1)) if _clean(value)
+            ]
+
+        nearby_schools: list[str] = []
+        school_section = re.search(r"学校|教育(.*?)</div>", html, re.DOTALL)
+        if school_section is not None:
+            nearby_schools = [
+                _clean(value)
+                for value in re.findall(r">([^<]+)</a>", school_section.group(0))
+                if _clean(value)
+            ]
+
+        description = ""
+        description_match = re.search(r'class="introContent"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if description_match is not None:
+            description = _strip_tags(description_match.group(1)).strip()[:500]
+
+        tags = [
+            _clean(value)
+            for value in re.findall(r'class="[^"]*tag[^"]*"[^>]*>\s*([^<]+?)\s*</span>', html)
+            if _clean(value) and len(_clean(value)) < 20
+        ]
+
+        price_history: list[dict] = []
+        price_history_match = re.search(r"priceHistory\s*[:=]\s*(\[[^\]]*\])", html)
+        if price_history_match is not None:
+            import json
+
+            try:
+                price_history = json.loads(price_history_match.group(1))
+            except (json.JSONDecodeError, ValueError):
+                price_history = []
+
+        images = re.findall(r'data-src="(https?://[^"]+(?:\.jpg|\.png|\.webp)[^"]*)"', html)[:10]
+
+        return HouseDetail(
+            id=house_id,
+            platform=self.platform_name,
+            title=title,
+            price=price,
+            price_unit="万",
+            area=area,
+            unit_price=unit_price,
+            layout=layout,
+            floor=floor,
+            orientation=orientation,
+            community=community,
+            district=district,
+            city="",
+            address=address,
+            url=f"https://{city_abbr}.{self.site_domain}/ershoufang/{house_id}.html",
+            listing_date="",
+            tags=tags,
+            description=description,
+            building_year=building_year,
+            building_type=building_type,
+            elevator=elevator,
+            parking=parking,
+            green_ratio=green_ratio,
+            volume_ratio=volume_ratio,
+            property_fee=property_fee,
+            nearby_schools=nearby_schools,
+            nearby_subway=nearby_subway,
+            price_history=price_history,
+            images=images,
+        )
 
     def _parse_card(self, card: str, city: str) -> House | None:
         href_match = re.search(r'href="(https?://[^"]*?/ershoufang/(\d+)\.html)"', card)

@@ -36,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_arguments(search)
     search.add_argument("--limit", type=int, default=20)
 
+    detail = subparsers.add_parser("detail", help="Fetch detail for one listing reference")
+    detail.add_argument("--listing-ref", required=True, dest="listing_ref")
+
     baseline = subparsers.add_parser("baseline", help="Run live multi-platform baseline")
     baseline.add_argument("--city", default="上海")
     baseline.add_argument("--platform", action="append", dest="platforms", default=[])
@@ -62,6 +65,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             sample_limit=args.sample_limit,
             search_limit=args.search_limit,
         )
+    if args.command == "detail":
+        return await service.detail(args.listing_ref)
 
     filters = build_search_filter(
         city=args.city,

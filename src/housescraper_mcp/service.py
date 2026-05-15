@@ -8,11 +8,12 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from house_cli.client.adapters import ADAPTER_REGISTRY
 from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
+from house_cli.models.house import HouseDetail
 
 from housescraper_mcp.adapters import BeikeClient, LianjiaClient
 from housescraper_mcp.artifacts import ArtifactStore
@@ -25,6 +26,13 @@ class SearchAdapter(Protocol):
 
     async def search(self, filters: SearchFilter) -> list[House]:
         """Return a unified set of house results for the given filter."""
+
+
+class DetailAdapter(Protocol):
+    """The slice of the upstream adapter detail API used by this service."""
+
+    async def detail(self, house_id: str) -> HouseDetail:
+        """Return a structured detail payload for the given listing ID."""
 
 
 AdapterFactory = Callable[[], SearchAdapter]
@@ -264,6 +272,23 @@ def listing_ref(listing: Mapping[str, Any]) -> str:
     """Build a stable agent-facing listing reference."""
 
     return f"{listing['platform']}:{listing['id']}"
+
+
+def parse_listing_ref(value: str) -> tuple[str, str]:
+    """Parse a stable agent-facing listing reference."""
+
+    platform, separator, house_id = value.partition(":")
+    if not separator or not platform or not house_id:
+        raise ValueError("listing_ref must look like '<platform>:<id>'")
+    return platform, house_id
+
+
+def serialize_detail(detail: HouseDetail) -> dict[str, Any]:
+    """Project HouseDetail into the public detail contract."""
+
+    payload = asdict(detail)
+    payload["listing_ref"] = listing_ref(payload)
+    return payload
 
 
 def attach_keyword_match(listing: dict[str, Any], keyword: str) -> dict[str, Any]:
@@ -566,6 +591,42 @@ class HouseScraperService:
         }
         payload["report_artifact_path"] = self.artifact_store.write_baseline_report(city, payload)
         return payload
+
+    async def detail(self, listing_ref: str) -> dict[str, Any]:
+        """Fetch structured detail for a selected listing."""
+        platform, house_id = parse_listing_ref(listing_ref)
+        target = resolve_platforms([platform])[0]
+        factory = self.adapter_factories.get(target.canonical)
+        if factory is None:
+            raise ValueError(f"No adapter configured for platform: {target.canonical}")
+
+        adapter = factory()
+        if not hasattr(adapter, "detail"):
+            raise ValueError(f"Detail lookup is not supported for platform: {target.canonical}")
+
+        try:
+            detail = await cast(DetailAdapter, adapter).detail(house_id)
+            serialized = serialize_detail(detail)
+            return {
+                "status": "success",
+                "meta": {
+                    "listing_ref": listing_ref,
+                    "platform": target.canonical,
+                },
+                "data": serialized,
+            }
+        except Exception as exc:
+            error_type, _captcha_suspected = classify_error(exc)
+            return {
+                "status": "error",
+                "meta": {
+                    "listing_ref": listing_ref,
+                    "platform": target.canonical,
+                    "error_type": error_type,
+                    "error_message": str(exc),
+                },
+                "data": None,
+            }
 
     async def _run_platforms(
         self,
