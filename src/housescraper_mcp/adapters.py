@@ -6,7 +6,8 @@ import re
 from html import unescape
 
 from house_cli.client.http import HttpClient
-from house_cli.client.auth import save_cookies
+from house_cli.client.adapters.anjuke import AnjukeClient as UpstreamAnjukeClient
+from house_cli.client.auth import load_or_extract_cookies, save_cookies
 from house_cli.models.cities import CITY_ABBR, DISTRICTS
 from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
@@ -24,7 +25,7 @@ class KeFamilyClient:
     fallback_cookie_domains: tuple[str, ...] = ()
 
     def _build_list_url(self, filters: SearchFilter) -> str:
-        city_abbr = CITY_ABBR.get(filters.city, "sh")
+        city_abbr = self._resolve_city_abbr_or_raise(filters.city)
         base = f"https://{city_abbr}.{self.site_domain}/ershoufang/"
 
         parts: list[str] = []
@@ -76,7 +77,7 @@ class KeFamilyClient:
         return base
 
     async def search(self, filters: SearchFilter) -> list[House]:
-        city_abbr = CITY_ABBR.get(filters.city, "sh")
+        city_abbr = self._resolve_city_abbr_or_raise(filters.city)
         url = self._build_list_url(filters)
         referer = f"https://{city_abbr}.{self.site_domain}/ershoufang/"
         cookies = prepare_cookies(
@@ -100,10 +101,16 @@ class KeFamilyClient:
 
         return self._parse_list(html, filters.city)
 
-    async def detail(self, house_id: str) -> HouseDetail:
+    async def detail(
+        self,
+        house_id: str,
+        *,
+        city: str | None = None,
+        url: str | None = None,
+    ) -> HouseDetail:
         """Fetch a structured detail page for a selected listing."""
 
-        city_abbr = "sh"
+        city_abbr = self._resolve_detail_city_abbr(city=city, url=url)
         url = f"https://{city_abbr}.{self.site_domain}/ershoufang/{house_id}.html"
         referer = f"https://{city_abbr}.{self.site_domain}/ershoufang/"
         cookies = prepare_cookies(
@@ -131,6 +138,23 @@ class KeFamilyClient:
             )
 
         return self._parse_detail(html, house_id, city_abbr)
+
+    def _resolve_detail_city_abbr(self, *, city: str | None, url: str | None) -> str:
+        if city:
+            return self._resolve_city_abbr_or_raise(city)
+
+        if url:
+            match = re.search(r"https?://([a-z0-9-]+)\.", url)
+            if match is not None:
+                return match.group(1)
+
+        return "sh"
+
+    def _resolve_city_abbr_or_raise(self, city: str) -> str:
+        city_abbr = CITY_ABBR.get(city)
+        if city_abbr is None:
+            raise RuntimeError(f"Unsupported city for {self.platform_name}: {city}")
+        return city_abbr
 
     def _looks_like_captcha(self, html: str) -> bool:
         title = _extract_title(html).upper()
@@ -487,6 +511,95 @@ class LianjiaClient(KeFamilyClient):
     site_domain = "lianjia.com"
     cookie_domain = "lianjia.com"
     fallback_cookie_domains = ("ke.com",)
+
+
+ANJUKE_CITY_MAP = {
+    "北京": "beijing",
+    "上海": "shanghai",
+    "广州": "guangzhou",
+    "深圳": "shenzhen",
+    "成都": "chengdu",
+    "杭州": "hangzhou",
+    "重庆": "chongqing",
+    "武汉": "wuhan",
+    "苏州": "suzhou",
+    "南京": "nanjing",
+    "天津": "tianjin",
+    "西安": "xian",
+    "长沙": "changsha",
+    "郑州": "zhengzhou",
+    "东莞": "dongguan",
+    "青岛": "qingdao",
+    "合肥": "hefei",
+    "佛山": "foshan",
+    "宁波": "ningbo",
+    "昆明": "kunming",
+    "沈阳": "shenyang",
+    "大连": "dalian",
+    "厦门": "xiamen",
+    "济南": "jinan",
+    "无锡": "wuxi",
+    "福州": "fuzhou",
+    "哈尔滨": "haerbin",
+    "石家庄": "shijiazhuang",
+    "珠海": "zh",
+}
+
+
+class AnjukeClient(UpstreamAnjukeClient):
+    """Local Anjuke adapter wrapper with explicit city routing (no silent Shanghai fallback)."""
+
+    def _resolve_city_slug_or_raise(self, city: str) -> str:
+        city_slug = ANJUKE_CITY_MAP.get(city)
+        if city_slug is None:
+            raise RuntimeError(f"Unsupported city for anjuke: {city}")
+        return city_slug
+
+    def _build_list_url(self, filters: SearchFilter) -> str:
+        city_slug = self._resolve_city_slug_or_raise(filters.city)
+        if filters.district:
+            district_slug = filters.district.lower()
+            return f"https://{city_slug}.anjuke.com/sale/{district_slug}/"
+        return f"https://{city_slug}.anjuke.com/sale/?from=HomePage_RecommendHouse"
+
+    async def search(self, filters: SearchFilter) -> list[House]:
+        city_slug = self._resolve_city_slug_or_raise(filters.city)
+        cookies = load_or_extract_cookies("anjuke.com")
+        referer = "https://www.anjuke.com/sy-city.html"
+        sale_url = self._build_list_url(filters)
+
+        async with HttpClient(referer=referer) as client:
+            try:
+                resp = await client.get(sale_url, cookies=cookies)
+                html = resp.text
+                if resp.cookies:
+                    merged = {**cookies, **{k: v for k, v in resp.cookies.items()}}
+                    save_cookies("anjuke.com", merged)
+
+                if resp.status_code != 403 and len(html) > 5000:
+                    houses = self._parse_list(html, filters.city)
+                    if houses:
+                        return houses
+            except Exception:
+                pass
+
+            homepage_url = f"https://{city_slug}.anjuke.com/?from=AJK_Web_City"
+            try:
+                client.set_referer(referer)
+                resp = await client.get(homepage_url, cookies=cookies)
+                html = resp.text
+            except Exception:
+                html = ""
+
+        if len(html) < 5000:
+            raise RuntimeError(
+                "anjuke.com requires browser cookies. "
+                "Please visit anjuke.com in your browser, select a city, "
+                "then cookies will be automatically extracted (or export to "
+                "~/.config/house-cli/cookies.json)"
+            )
+
+        return self._parse_list(html, filters.city)
 
 
 def _extract_title(html: str) -> str:

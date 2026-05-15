@@ -1,4 +1,9 @@
-from housescraper_mcp.adapters import BeikeClient, LianjiaClient
+import asyncio
+
+import pytest
+from house_cli.models.filter import SearchFilter
+
+from housescraper_mcp.adapters import AnjukeClient, BeikeClient, LianjiaClient
 
 
 BEIKE_HTML = """
@@ -151,3 +156,118 @@ def test_lianjia_detail_parser_keeps_platform_and_domain() -> None:
 
     assert detail.platform == "lianjia"
     assert detail.url == "https://sh.lianjia.com/ershoufang/107110451347.html"
+
+
+def test_lianjia_detail_uses_requested_city_domain(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.text = KE_DETAIL_HTML
+            self.cookies = {}
+
+    class FakeHttpClient:
+        def __init__(self, *, referer: str) -> None:
+            captured["referer"] = referer
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str, *, cookies: dict[str, str]):
+            captured["url"] = url
+            captured["cookies"] = str(cookies)
+            return FakeResponse()
+
+    monkeypatch.setattr("housescraper_mcp.adapters.HttpClient", FakeHttpClient)
+    monkeypatch.setattr(
+        "housescraper_mcp.adapters.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
+    monkeypatch.setattr(LianjiaClient, "_looks_like_detail_captcha", lambda self, html: False)
+
+    detail = asyncio.run(LianjiaClient().detail("107110451347", city="珠海"))
+
+    assert captured["referer"] == "https://zh.lianjia.com/ershoufang/"
+    assert captured["url"] == "https://zh.lianjia.com/ershoufang/107110451347.html"
+    assert detail.url == "https://zh.lianjia.com/ershoufang/107110451347.html"
+
+
+def test_beike_search_uses_requested_city_domain(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.text = BEIKE_HTML
+            self.cookies = {}
+
+    class FakeHttpClient:
+        def __init__(self, *, referer: str) -> None:
+            captured["referer"] = referer
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str, *, cookies: dict[str, str]):
+            captured["url"] = url
+            return FakeResponse()
+
+    monkeypatch.setattr("housescraper_mcp.adapters.HttpClient", FakeHttpClient)
+    monkeypatch.setattr(
+        "housescraper_mcp.adapters.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
+    monkeypatch.setattr(BeikeClient, "_looks_like_captcha", lambda self, html: False)
+
+    filters = SearchFilter(city="珠海")
+    asyncio.run(BeikeClient().search(filters))
+
+    assert captured["referer"] == "https://zh.ke.com/ershoufang/"
+    assert captured["url"] == "https://zh.ke.com/ershoufang/"
+
+
+def test_lianjia_search_rejects_unknown_city_instead_of_fallback() -> None:
+    filters = SearchFilter(city="不存在城市")
+    with pytest.raises(RuntimeError, match="Unsupported city"):
+        LianjiaClient()._build_list_url(filters)
+
+
+def test_anjuke_search_uses_requested_city_domain(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.text = "<html><body>tiny</body></html>"
+            self.cookies = {}
+            self.status_code = 200
+
+    class FakeHttpClient:
+        def __init__(self, *, referer: str) -> None:
+            captured["referer"] = referer
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get(self, url: str, *, cookies: dict[str, str]):
+            captured["url"] = url
+            return FakeResponse()
+
+        def set_referer(self, referer: str) -> None:
+            captured["set_referer"] = referer
+
+    monkeypatch.setattr("housescraper_mcp.adapters.HttpClient", FakeHttpClient)
+    monkeypatch.setattr("housescraper_mcp.adapters.load_or_extract_cookies", lambda domain: {"session": "ok"})
+    monkeypatch.setattr(AnjukeClient, "_parse_list", lambda self, html, city: [])
+
+    with pytest.raises(RuntimeError, match="requires browser cookies"):
+        asyncio.run(AnjukeClient().search(SearchFilter(city="珠海")))
+
+    assert captured["url"] == "https://zh.anjuke.com/?from=AJK_Web_City"

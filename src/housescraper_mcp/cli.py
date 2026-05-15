@@ -26,6 +26,9 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--min-area", type=float, dest="min_area")
         target.add_argument("--max-area", type=float, dest="max_area")
         target.add_argument("--layout", default="")
+        target.add_argument("--layouts", nargs="+")
+        target.add_argument("--max-unit-price", type=float, dest="max_unit_price")
+        target.add_argument("--detail-verify-limit", type=int, dest="detail_verify_limit", default=0)
         target.add_argument("--listing-type", choices=["buy", "rent"], default="buy")
         target.add_argument("--page", type=int, default=1)
 
@@ -77,6 +80,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         min_area=args.min_area,
         max_area=args.max_area,
         layout=args.layout,
+        layouts=args.layouts,
+        max_unit_price=args.max_unit_price,
+        detail_verify_limit=args.detail_verify_limit,
         listing_type=args.listing_type,
         page=args.page,
         keywords=args.keyword,

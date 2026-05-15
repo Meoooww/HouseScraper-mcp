@@ -38,6 +38,47 @@ def test_search_listings_accepts_keyword_and_passes_it_to_search_filter(monkeypa
     assert captured["limit"] == 5
 
 
+def test_search_listings_accepts_buy_side_summary_inputs(monkeypatch) -> None:
+    captured = {}
+
+    class FakeService:
+        async def search(self, filters, *, platforms=None, limit=20):
+            captured["layouts"] = getattr(filters, "layouts", None)
+            captured["max_unit_price"] = getattr(filters, "max_unit_price", None)
+            return {"status": "success", "meta": {}, "data": []}
+
+    monkeypatch.setattr(server, "service", FakeService())
+
+    response = asyncio.run(
+        search_listings(
+            city="珠海",
+            layouts=["1室", "2室"],
+            max_unit_price=5000,
+            limit=5,
+        )
+    )
+
+    assert response["status"] == "success"
+    assert captured["layouts"] == ["1室", "2室"]
+    assert captured["max_unit_price"] == 5000
+
+
+def test_search_listings_accepts_detail_verify_limit(monkeypatch) -> None:
+    captured = {}
+
+    class FakeService:
+        async def search(self, filters, *, platforms=None, limit=20):
+            captured["detail_verify_limit"] = getattr(filters, "detail_verify_limit", None)
+            return {"status": "success", "meta": {}, "data": []}
+
+    monkeypatch.setattr(server, "service", FakeService())
+
+    response = asyncio.run(search_listings(city="珠海", detail_verify_limit=1, limit=5))
+
+    assert response["status"] == "success"
+    assert captured["detail_verify_limit"] == 1
+
+
 def test_get_listing_detail_accepts_listing_ref_and_passes_it_to_service(monkeypatch) -> None:
     captured = {}
 

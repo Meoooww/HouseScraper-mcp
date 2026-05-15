@@ -249,6 +249,21 @@ cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
 uv run housescraper-cli baseline --city 上海
 ```
 
+按同一查询参数分别验证不同城市（推荐用于 07 的城市能力覆盖检查）：
+
+```bash
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+uv run housescraper-cli baseline --city 上海 --platform beike --platform lianjia --platform anjuke
+uv run housescraper-cli baseline --city 珠海 --platform beike --platform lianjia --platform anjuke
+```
+
+检查重点（跨城市分别运行）：
+
+- 每次 `baseline` 只对应一个 `city`，对比两次运行的 `platform_summary` 即可评估城市差异。
+- `platform_summary[*]` 按平台给出 `probe_ok/search_ok`、`search_result_count`、`search_error_type`。
+- 当某个平台失败但其他平台成功时，`checks.filtered_search.status` 应为 `partial_success`（不是硬失败），其余成功平台的数据仍保留。
+- 只有当该次运行中的所有平台都失败时，才应看到 `checks.filtered_search.status = error`。
+
 分别测试三个平台：
 
 ```bash

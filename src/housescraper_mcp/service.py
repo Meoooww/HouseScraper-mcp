@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -14,8 +15,9 @@ from house_cli.models.filter import SearchFilter
 from house_cli.models.house import House
 from house_cli.models.house import HouseDetail
 
-from housescraper_mcp.adapters import BeikeClient, LianjiaClient
+from housescraper_mcp.adapters import AnjukeClient, BeikeClient, LianjiaClient
 from housescraper_mcp.artifacts import ArtifactStore
+from housescraper_mcp.buy_side_screening import apply_buy_side_screening, buy_side_screening_requested
 from housescraper_mcp.cookies import prepare_cookies
 from housescraper_mcp.platforms import RequestedPlatform, group_by_canonical, resolve_platforms
 from housescraper_mcp.search_contract import annotate_duplicates as annotate_duplicates_module
@@ -45,7 +47,13 @@ class SearchAdapter(Protocol):
 class DetailAdapter(Protocol):
     """The slice of the upstream adapter detail API used by this service."""
 
-    async def detail(self, house_id: str) -> HouseDetail:
+    async def detail(
+        self,
+        house_id: str,
+        *,
+        city: str | None = None,
+        url: str | None = None,
+    ) -> HouseDetail:
         """Return a structured detail payload for the given listing ID."""
 
 
@@ -94,7 +102,7 @@ def default_adapter_factories() -> dict[str, AdapterFactory]:
     return {
         "beike": BeikeClient,
         "lianjia": LianjiaClient,
-        "anjuke": ADAPTER_REGISTRY["anjuke"],
+        "anjuke": AnjukeClient,
     }
 
 
@@ -107,6 +115,9 @@ def build_search_filter(
     min_area: float | None = None,
     max_area: float | None = None,
     layout: str = "",
+    layouts: list[str] | None = None,
+    max_unit_price: float | None = None,
+    detail_verify_limit: int | None = None,
     listing_type: str = "buy",
     page: int = 1,
     sort_by: str = "default",
@@ -122,11 +133,24 @@ def build_search_filter(
         min_area=min_area,
         max_area=max_area,
         layout=layout,
+        layouts=layouts,
+        max_unit_price=max_unit_price,
+        detail_verify_limit=detail_verify_limit,
         listing_type=listing_type,
         page=page,
         sort_by=sort_by,
         keywords=keywords,
     )
+
+
+def serialize_search_query(filters: SearchFilter) -> dict[str, Any]:
+    """Return the public query payload, including MCP-added filter attributes."""
+
+    payload = asdict(filters)
+    payload["layouts"] = list(getattr(filters, "layouts", []))
+    payload["max_unit_price"] = getattr(filters, "max_unit_price", None)
+    payload["detail_verify_limit"] = getattr(filters, "detail_verify_limit", 0)
+    return payload
 
 
 def upstream_filters_for_platform(canonical: str, filters: SearchFilter) -> SearchFilter:
@@ -277,6 +301,7 @@ class HouseScraperService:
     ) -> None:
         self.adapter_factories = dict(adapter_factories or default_adapter_factories())
         self.artifact_store = artifact_store or ArtifactStore()
+        self._listing_context: dict[str, dict[str, str]] = {}
 
     async def probe(
         self,
@@ -301,7 +326,7 @@ class HouseScraperService:
 
         return {
             "ok": any(result["ok"] for result in results),
-            "query": asdict(filters),
+            "query": serialize_search_query(filters),
             "client_side_filtering": client_side_filtering_applied(filters),
             "requested_platforms": [target.requested for target in targets],
             "resolved_platforms": [target.canonical for target in targets],
@@ -336,22 +361,28 @@ class HouseScraperService:
             )
 
         annotated_houses, possible_duplicate_count = annotate_duplicates(houses)
-        returned_houses = annotated_houses[:limit]
-        meta_platforms = [search_platform_meta(status, filters) for status in platform_status]
-        status = top_level_search_status(platform_status)
+        screened_houses = apply_buy_side_screening(annotated_houses, filters)
+        self._remember_listing_contexts(annotated_houses)
+        if buy_side_screening_requested(filters):
+            screened_houses = await self._apply_bounded_detail_verification(screened_houses, filters)
+        screened_counts = Counter(str(item.get("platform", "")) for item in screened_houses)
+        screened_platform_status = self._apply_screened_platform_counts(platform_status, screened_counts)
+        returned_houses = screened_houses[:limit]
+        meta_platforms = [search_platform_meta(status, filters) for status in screened_platform_status]
+        status = top_level_search_status(screened_platform_status)
 
         return {
             "status": status,
             "meta": {
-                "query": asdict(filters),
+                "query": serialize_search_query(filters),
                 "client_side_filtering": client_side_filtering_applied(filters),
                 "requested_platforms": [target.requested for target in targets],
                 "resolved_platforms": [target.canonical for target in targets],
                 "platforms": meta_platforms,
-                "raw_count": len(annotated_houses),
+                "raw_count": len(screened_houses),
                 "possible_duplicate_count": possible_duplicate_count,
                 "returned_count": len(returned_houses),
-                "truncated": len(annotated_houses) > limit,
+                "truncated": len(screened_houses) > limit,
             },
             "data": returned_houses,
         }
@@ -371,52 +402,16 @@ class HouseScraperService:
         """Run a repeatable live baseline for all supported platforms."""
 
         requested_platforms = list(platforms or DEFAULT_BASELINE_PLATFORMS)
-        probe_filters = build_search_filter(
+        return await self._baseline_for_city(
             city=city,
-            listing_type=listing_type,
-            page=page,
-        )
-        search_filters = build_search_filter(
-            city=city,
+            requested_platforms=requested_platforms,
             max_price=max_price,
             layout=layout,
             listing_type=listing_type,
             page=page,
-        )
-
-        probe_response = await self.probe(
-            probe_filters,
-            platforms=requested_platforms,
             sample_limit=sample_limit,
+            search_limit=search_limit,
         )
-        search_response = await self.search(
-            search_filters,
-            platforms=requested_platforms,
-            limit=search_limit,
-        )
-        platform_summary = build_baseline_summary(probe_response, search_response)
-
-        payload = {
-            "ok": bool(platform_summary)
-            and all(item["probe_ok"] and item["search_ok"] for item in platform_summary),
-            "generated_at": datetime.now(UTC).isoformat(),
-            "city": city,
-            "requested_platforms": requested_platforms,
-            "search_scenario": {
-                "max_price": max_price,
-                "layout": layout,
-                "listing_type": listing_type,
-                "page": page,
-                "search_limit": search_limit,
-            },
-            "platform_summary": platform_summary,
-            "checks": {
-                "probe": probe_response,
-                "filtered_search": search_response,
-            },
-        }
-        payload["report_artifact_path"] = self.artifact_store.write_baseline_report(city, payload)
-        return payload
 
     async def detail(self, listing_ref: str) -> dict[str, Any]:
         """Fetch structured detail for a selected listing."""
@@ -427,12 +422,18 @@ class HouseScraperService:
             raise ValueError(f"No adapter configured for platform: {target.canonical}")
 
         adapter = factory()
+        context = self._listing_context.get(listing_ref, {})
         if not hasattr(adapter, "detail"):
             raise ValueError(f"Detail lookup is not supported for platform: {target.canonical}")
 
         try:
-            detail = await cast(DetailAdapter, adapter).detail(house_id)
+            detail = await cast(DetailAdapter, adapter).detail(
+                house_id,
+                city=context.get("city"),
+                url=context.get("url"),
+            )
             serialized = serialize_detail(detail)
+            serialized["listing_ref"] = listing_ref
             return {
                 "status": "success",
                 "meta": {
@@ -519,3 +520,164 @@ class HouseScraperService:
             seen.add(target.canonical)
             ordered.append(target.canonical)
         return ordered
+
+    def _remember_listing_contexts(self, listings: Iterable[Mapping[str, Any]]) -> None:
+        for listing in listings:
+            ref = str(listing.get("listing_ref", "") or "")
+            if not ref:
+                continue
+
+            context: dict[str, str] = {}
+            city = str(listing.get("city", "") or "")
+            url = str(listing.get("url", "") or "")
+            if city:
+                context["city"] = city
+            if url:
+                context["url"] = url
+            if context:
+                self._listing_context[ref] = context
+
+    async def _apply_bounded_detail_verification(
+        self,
+        listings: list[dict[str, Any]],
+        filters: SearchFilter,
+    ) -> list[dict[str, Any]]:
+        limit = int(getattr(filters, "detail_verify_limit", 0) or 0)
+        if limit <= 0:
+            return listings
+
+        remaining = limit
+        verified: list[dict[str, Any]] = []
+        for listing in listings:
+            candidate = dict(listing)
+            if candidate.get("eligibility_tier") == "A":
+                candidate["detail_verification_status"] = "not_needed"
+                verified.append(candidate)
+                continue
+
+            if remaining <= 0:
+                candidate["detail_verification_status"] = "not_requested"
+                verified.append(candidate)
+                continue
+
+            remaining -= 1
+            verified.append(await self._verify_listing_for_search(candidate))
+
+        return apply_buy_side_screening(verified, filters)
+
+    async def _verify_listing_for_search(self, listing: Mapping[str, Any]) -> dict[str, Any]:
+        listing_ref_value = str(listing["listing_ref"])
+        platform, house_id = parse_listing_ref(listing_ref_value)
+        target = resolve_platforms([platform])[0]
+        factory = self.adapter_factories.get(target.canonical)
+        if factory is None:
+            return dict(listing)
+
+        adapter = factory()
+        if not hasattr(adapter, "detail"):
+            candidate = dict(listing)
+            candidate["detail_verification_status"] = "error"
+            candidate["detail_verification_error_type"] = "adapter_error"
+            candidate["detail_verification_error_message"] = "detail not supported"
+            return candidate
+
+        context = self._listing_context.get(listing_ref_value, {})
+        candidate = dict(listing)
+        try:
+            detail = await cast(DetailAdapter, adapter).detail(
+                house_id,
+                city=context.get("city"),
+                url=context.get("url"),
+            )
+            candidate.update(self._merge_listing_detail(candidate, serialize_detail(detail)))
+            candidate["detail_verification_status"] = "verified"
+            return candidate
+        except Exception as exc:
+            error_type, _captcha_suspected = classify_error(exc)
+            candidate["detail_verification_status"] = "error"
+            candidate["detail_verification_error_type"] = error_type
+            candidate["detail_verification_error_message"] = str(exc)
+            return candidate
+
+    @staticmethod
+    def _merge_listing_detail(listing: Mapping[str, Any], detail: Mapping[str, Any]) -> dict[str, Any]:
+        merged = dict(listing)
+        for key, value in detail.items():
+            if key == "listing_ref":
+                continue
+            if value in (None, "", [], {}):
+                continue
+            merged[key] = value
+        return merged
+
+    @staticmethod
+    def _apply_screened_platform_counts(
+        platform_status: Iterable[Mapping[str, Any]],
+        screened_counts: Counter[str],
+    ) -> list[dict[str, Any]]:
+        adjusted: list[dict[str, Any]] = []
+        for status in platform_status:
+            projected = dict(status)
+            if projected.get("ok", False):
+                projected["result_count"] = screened_counts.get(str(projected.get("platform", "")), 0)
+            adjusted.append(projected)
+        return adjusted
+
+    async def _baseline_for_city(
+        self,
+        *,
+        city: str,
+        requested_platforms: list[str],
+        max_price: float,
+        layout: str,
+        listing_type: str,
+        page: int,
+        sample_limit: int,
+        search_limit: int,
+    ) -> dict[str, Any]:
+        probe_filters = build_search_filter(
+            city=city,
+            listing_type=listing_type,
+            page=page,
+        )
+        search_filters = build_search_filter(
+            city=city,
+            max_price=max_price,
+            layout=layout,
+            listing_type=listing_type,
+            page=page,
+        )
+
+        probe_response = await self.probe(
+            probe_filters,
+            platforms=requested_platforms,
+            sample_limit=sample_limit,
+        )
+        search_response = await self.search(
+            search_filters,
+            platforms=requested_platforms,
+            limit=search_limit,
+        )
+        platform_summary = build_baseline_summary(probe_response, search_response)
+
+        payload = {
+            "ok": bool(platform_summary)
+            and all(item["probe_ok"] and item["search_ok"] for item in platform_summary),
+            "generated_at": datetime.now(UTC).isoformat(),
+            "city": city,
+            "requested_platforms": requested_platforms,
+            "search_scenario": {
+                "max_price": max_price,
+                "layout": layout,
+                "listing_type": listing_type,
+                "page": page,
+                "search_limit": search_limit,
+            },
+            "platform_summary": platform_summary,
+            "checks": {
+                "probe": probe_response,
+                "filtered_search": search_response,
+            },
+        }
+        payload["report_artifact_path"] = self.artifact_store.write_baseline_report(city, payload)
+        return payload
