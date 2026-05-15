@@ -19,3 +19,4 @@ class SearchFilter:
     page_size: int = 20
     keywords: str = ""
     tags: list[str] = field(default_factory=list)
+    anjuke_flow: str = "auto"  # auto, search, recommend

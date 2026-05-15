@@ -300,13 +300,18 @@ Error: Unknown platform: lianjia
 
 - `src/house_cli/client/adapters/anjuke.py`
 
-当前策略不是稳定地走标准搜索页，而是：
+真实参数探测报告见：
 
-1. 优先访问 `/{city}.anjuke.com/sale/`
+- `docs/anjuke-real-probe-2026-05-15.md`
+- 注意区分“代码声明层契约”和“实时抓取已验证参数”
+
+当前策略是：
+
+1. 通过筛选流入口模板访问 `https://{city}.anjuke.com/sale/?from=HomePage_Search`
 2. 如果 `sale` 页不可用，就回退到城市首页
-3. 从首页推荐房源区块里提取卡片
+3. 从可解析的卡片区块提取房源
 
-这意味着它更像一个“可运行的线索抓取器”，而不是强条件搜索器。
+这意味着它已经有了明确的“筛选流入口契约”，但还不是完整的强条件搜索器。
 
 ## `anjuke.search()` 已实现内容
 
@@ -315,19 +320,59 @@ Error: Unknown platform: lianjia
 当前 `anjuke.search()` 已经具备：
 
 - cookie 驱动访问
-- `sale` 页抓取
+- `sale` 筛选流入口抓取（`from=HomePage_Search`）
 - 城市首页回退逻辑
 - 列表 HTML 正则解析
 - 返回统一 `House` 数据模型
 
+### 已实现的筛选流入口契约（用于 MCP/工具层对接）
+
+`AnjukeClient` 当前已经提供两个公开方法：
+
+- `filter_flow_contract()`: 返回筛选流契约（入口模板、接受入参、返回字段）
+- `build_filter_flow_entry(filters)`: 返回本次请求的入口 URL 与归一化参数
+
+当前契约定义为：
+
+- `flow_name`: `anjuke_sale_filter_flow`
+- `entry_url_template`: `https://{city}.anjuke.com/sale/?from=HomePage_Search`
+
+当前声明接受的入参有：
+
+- `city`（required）
+- `district`
+- `min_price`
+- `max_price`
+- `min_area`
+- `max_area`
+- `layout`
+- `sort_by`
+- `page`
+- `keywords`
+- `listing_type`
+
+当前声明的统一返回字段有：
+
+- `id`
+- `platform`
+- `title`
+- `price`
+- `price_unit`
+- `area`
+- `unit_price`
+- `layout`
+- `district`
+- `city`
+- `url`
+
 ### 当前真正参与搜索 URL 构造的筛选项
 
-`anjuke` 当前代码里真正参与 URL 构造的筛选项很少：
+`anjuke` 当前代码里真正参与 URL 构造的筛选项是：
 
 | 筛选项 | 当前状态 | 说明 |
 | --- | --- | --- |
-| `city` | 已实现 | 通过 `ANJUKE_CITY` 做城市映射 |
-| `district` | 部分实现 | 直接拼 `/sale/{district}/` |
+| `city` | 已实现 | 通过 `ANJUKE_CITY` 做城市映射并落到子域名 |
+| 其他筛选项 | 未实现到 URL | 当前只进入统一筛选流入口，未把筛选项编码到 URL |
 
 ### 列表页实际返回字段
 
@@ -453,4 +498,4 @@ Error: Unknown platform: lianjia
 
 - `beike`：一个比较完整的 `ke.com` 二手房搜索与详情抓取适配器
 - `lianjia`：尚未独立实现，只是并入 `beike` 的文案概念
-- `anjuke`：一个可用的列表抓取来源，详情能力已打通但字段仍然较薄
+- `anjuke`：一个可用的列表抓取来源，已实现筛选流入口契约，详情能力已打通但字段仍然较薄

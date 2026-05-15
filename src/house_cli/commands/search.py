@@ -71,7 +71,16 @@ def _apply_hard_filters(houses, filters: SearchFilter, max_unit_price: float | N
 
 
 def _drop_anjuke_recommend_flow(houses):
-    """Exclude explicit Anjuke homepage recommendation flow links."""
+    """Drop Anjuke recommendation links only when normal search-flow results exist."""
+    has_normal_anjuke = any(
+        h.platform == "anjuke"
+        and h.url
+        and "from=HomePage_RecommendHouse" not in h.url
+        for h in houses
+    )
+    if not has_normal_anjuke:
+        return houses
+
     return [
         h for h in houses
         if not (
@@ -80,6 +89,23 @@ def _drop_anjuke_recommend_flow(houses):
             and "from=HomePage_RecommendHouse" in h.url
         )
     ]
+
+
+def _apply_anjuke_flow_selection(houses, flow: str):
+    """Apply explicit Anjuke flow preference when requested."""
+    if flow == "recommend":
+        return [
+            h for h in houses
+            if h.platform != "anjuke"
+            or (h.url and "from=HomePage_RecommendHouse" in h.url)
+        ]
+    if flow == "search":
+        return [
+            h for h in houses
+            if h.platform != "anjuke"
+            or not (h.url and "from=HomePage_RecommendHouse" in h.url)
+        ]
+    return _drop_anjuke_recommend_flow(houses)
 
 
 def _render_table(houses):
@@ -117,10 +143,16 @@ def _render_table(houses):
 @click.option("--max-unit-price", type=float, help="Maximum unit price (yuan/sqm)")
 @click.option("--type", "listing_type", type=click.Choice(["buy", "rent"]), default="buy")
 @click.option("--platform", default="all", help="Platform: beike,anjuke,tongcheng,ziroom,fang,zhuge,all")
+@click.option(
+    "--anjuke-flow",
+    type=click.Choice(["auto", "search", "recommend"]),
+    default="auto",
+    help="Anjuke flow preference: auto/search/recommend",
+)
 @click.option("--sort", "sort_by", default="default", help="Sort: default,price_asc,price_desc,area,date")
 @click.option("--output", "output_format", type=click.Choice(["table", "json", "yaml"]), default="table")
 def search(city, district, min_price, max_price, min_area, max_area,
-           layout, max_unit_price, listing_type, platform, sort_by, output_format):
+           layout, max_unit_price, listing_type, platform, anjuke_flow, sort_by, output_format):
     """Search houses across platforms."""
     filters = SearchFilter(
         city=city,
@@ -132,6 +164,7 @@ def search(city, district, min_price, max_price, min_area, max_area,
         layout=layout,
         listing_type=listing_type,
         sort_by=sort_by,
+        anjuke_flow=anjuke_flow,
     )
 
     adapters = get_adapters(platform, listing_type)
@@ -145,7 +178,7 @@ def search(city, district, min_price, max_price, min_area, max_area,
     if district:
         houses = [h for h in houses if not h.district or district in h.district]
 
-    houses = _drop_anjuke_recommend_flow(houses)
+    houses = _apply_anjuke_flow_selection(houses, anjuke_flow)
     houses = _apply_hard_filters(houses, filters, max_unit_price)
     houses = _sort_results(houses, sort_by)
 

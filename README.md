@@ -14,26 +14,11 @@
 2. 完成滑块或人机验证，直到你能正常看到房源列表页。
 3. 刷新本地缓存的 `ke.com` cookie，再重新运行 CLI。
 
-可以直接用下面的命令把浏览器里的最新 `ke.com` cookie 写回 `~/.config/house-cli/cookies.json`：
-
-```bash
-PYTHONPATH=src .venv/bin/python - <<'PY'
-from house_cli.client.auth import _try_browser_cookie3, save_cookies
-
-cookies = _try_browser_cookie3("ke.com")
-if not cookies:
-    raise SystemExit("No ke.com browser cookies found")
-
-save_cookies("ke.com", cookies)
-print("Saved latest ke.com cookies")
-PY
-```
-
-完成这一步后，再执行例如：
-
-```bash
-PYTHONPATH=src .venv/bin/python -m house_cli.main search --platform beike --city 上海 --output json
-```
 
 本地实测中，先完成浏览器验证并刷新 `ke.com` cookie 后，贝壳搜索可以恢复正常返回结果。
 
+
+## 链家 `lianjia` 使用前置
+在真实浏览器里打开 https://shanghai.anjuke.com/sale/ 并完成验证。
+刷新本机 anjuke.com cookies（确保 CLI 读取的是最新会话）。
+再跑 --anjuke-flow search 验证是否恢复。

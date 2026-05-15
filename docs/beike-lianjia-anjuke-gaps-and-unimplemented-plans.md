@@ -229,12 +229,20 @@ Error: Unknown platform: lianjia
 
 ## 4. `anjuke` 当前缺点
 
-## 4.1 搜索筛选能力极不完整
+实时证据参考：
 
-`anjuke.search()` 当前真正参与 URL 构造的只有：
+- `docs/anjuke-real-probe-2026-05-15.md`
+
+## 4.1 搜索筛选能力仍不完整（但入口契约已落地）
+
+截至当前实现，`anjuke` 已经补上了筛选流入口契约：
+
+- 入口模板：`https://{city}.anjuke.com/sale/?from=HomePage_Search`
+- 公开方法：`filter_flow_contract()`、`build_filter_flow_entry(filters)`
+
+但 `anjuke.search()` 真正参与 URL 构造并影响请求路径的仍然主要是：
 
 - `city`
-- `district`
 
 以下字段虽然在统一模型和 CLI 中都出现了，但没有被 `anjuke` 实际消费：
 
@@ -252,28 +260,20 @@ Error: Unknown platform: lianjia
 
 ### 影响
 
-- 上层用户以为自己在做精确筛选
-- 实际拿到的只是宽泛列表，甚至是推荐列表
+- 上层现在可以知道“接口声明支持哪些参数”，但仍不能保证这些参数在站点端生效
+- 结果仍可能是宽泛列表，甚至在回退时变成推荐流结果
 
 ### 重要性
 
 非常高。这是 `anjuke` 从“能跑”到“能用”的关键一步。
 
-## 4.2 `district` 也只是半实现
+## 4.2 `district` 目前只在契约层可见，尚未做 URL 规则映射
 
-当前区级搜索逻辑是：
-
-- `filters.district.lower()`
-- 然后拼接到 `/sale/{district}/`
-
-### 问题
-
-- 中文区名直接 `lower()` 并不会变成站点 slug
-- 这不是真正的区名映射
+当前代码里，`district` 已经被纳入 `build_filter_flow_entry(filters)` 的 `request_params`，但未转成站点可识别的 URL 规则（slug/path/query）。
 
 ### 含义
 
-`district` 虽然看起来被接了进去，但其实也不是可靠实现。
+`district` 在“参数声明层”已支持，但在“服务端筛选生效层”仍未完成。
 
 ## 4.3 搜索会回退到首页推荐房源，不是真正的条件搜索闭环
 

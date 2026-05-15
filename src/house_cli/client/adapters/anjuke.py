@@ -47,6 +47,17 @@ class AnjukeClient(BaseClient):
 
     platform_name = "anjuke"
 
+    @staticmethod
+    def _resolve_city_slug(city_name: str) -> str:
+        city_slug = ANJUKE_CITY.get(city_name)
+        if city_slug:
+            return city_slug
+        supported = "、".join(sorted(ANJUKE_CITY.keys()))
+        raise RuntimeError(
+            f"Unsupported city for anjuke: {city_name}. "
+            f"Supported cities: {supported}"
+        )
+
     def filter_flow_contract(self) -> dict:
         """Describe Anjuke sale filter flow request/response contract."""
         return {
@@ -82,7 +93,7 @@ class AnjukeClient(BaseClient):
 
     def build_filter_flow_entry(self, filters: SearchFilter) -> dict:
         """Build a normalized filter-flow entry payload for introspection and tracing."""
-        city = ANJUKE_CITY.get(filters.city, "shanghai")
+        city = self._resolve_city_slug(filters.city)
         request_params = {
             "city": filters.city,
             "district": filters.district,
@@ -113,30 +124,87 @@ class AnjukeClient(BaseClient):
         entry = self.build_filter_flow_entry(filters)
         return entry["url"]
 
+    @staticmethod
+    def _is_antibot_gateway_page(html: str) -> bool:
+        if not html:
+            return False
+        return (
+            "@@xxzlGatewayUrl" in html
+            or "esfcommon-captcha-geetest" in html
+            or "callback.58.com/antibot/verifycode" in html
+        )
+
+    @staticmethod
+    def _extract_gateway_url(html: str) -> str:
+        m = re.search(
+            r'id="@@xxzlGatewayUrl"[^>]*>\s*(https?://[^<\s]+)',
+            html,
+        )
+        if not m:
+            return ""
+        return unescape(m.group(1)).strip()
+
+    @staticmethod
+    def _merge_response_cookies(base_cookies: dict, resp) -> dict:
+        if not getattr(resp, "cookies", None):
+            return base_cookies
+        merged = {**base_cookies, **{k: v for k, v in resp.cookies.items()}}
+        if merged != base_cookies:
+            save_cookies("anjuke.com", merged)
+        return merged
+
     async def search(self, filters: SearchFilter) -> list[House]:
-        city = ANJUKE_CITY.get(filters.city, "shanghai")
+        city = self._resolve_city_slug(filters.city)
         cookies = load_or_extract_cookies("anjuke.com")
         referer = "https://www.anjuke.com/sy-city.html"
 
-        # Try /sale/ page first
+        flow = getattr(filters, "anjuke_flow", "auto")
         sale_url = self._build_list_url(filters)
         async with HttpClient(referer=referer) as client:
+            if flow == "recommend":
+                homepage_url = f"https://{city}.anjuke.com/?from=AJK_Web_City"
+                try:
+                    client.set_referer(referer)
+                    resp = await client.get(homepage_url, cookies=cookies)
+                    html = resp.text
+                    cookies = self._merge_response_cookies(cookies, resp)
+                except Exception:
+                    html = ""
+                return self._parse_list(html, filters.city)
+
             try:
                 resp = await client.get(sale_url, cookies=cookies)
                 html = resp.text
 
-                if resp.cookies:
-                    merged = {**cookies, **{k: v for k, v in resp.cookies.items()}}
-                    save_cookies("anjuke.com", merged)
+                cookies = self._merge_response_cookies(cookies, resp)
 
                 if resp.status_code != 403 and len(html) > 5000:
                     houses = self._parse_list(html, filters.city)
                     if houses:
                         return houses
-            except Exception:
-                pass
 
-            # Fallback: city homepage has recommended listings
+                if self._is_antibot_gateway_page(html):
+                    gateway_url = self._extract_gateway_url(html)
+                    if gateway_url:
+                        try:
+                            challenge_resp = await client.get(gateway_url, cookies=cookies)
+                            cookies = self._merge_response_cookies(cookies, challenge_resp)
+                        except Exception:
+                            pass
+
+                    retry_resp = await client.get(sale_url, cookies=cookies)
+                    html = retry_resp.text
+                    cookies = self._merge_response_cookies(cookies, retry_resp)
+                    retry_houses = self._parse_list(html, filters.city)
+                    if retry_houses:
+                        return retry_houses
+            except Exception:
+                html = ""
+
+            if flow == "search":
+                return self._parse_list(html, filters.city)
+
+            # auto fallback: city homepage has recommended listings
             homepage_url = f"https://{city}.anjuke.com/?from=AJK_Web_City"
             try:
                 client.set_referer(referer)
@@ -144,6 +212,10 @@ class AnjukeClient(BaseClient):
                 html = resp.text
             except Exception:
                 html = ""
+
+        houses = self._parse_list(html, filters.city)
+        if houses:
+            return houses
 
         if len(html) < 5000:
             raise RuntimeError(
@@ -153,7 +225,7 @@ class AnjukeClient(BaseClient):
                 "~/.config/house-cli/cookies.json)"
             )
 
-        return self._parse_list(html, filters.city)
+        return houses
 
     async def detail(self, house_id: str) -> HouseDetail:
         cookies = load_or_extract_cookies("anjuke.com")
