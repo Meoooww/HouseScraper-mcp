@@ -177,7 +177,7 @@ def build_baseline_summary(
     }
     search_by_requested = {
         result["requested_platform"]: result
-        for result in search_response.get("platform_status", [])
+        for result in search_response.get("meta", {}).get("platforms", [])
     }
 
     summary: list[dict[str, Any]] = []
@@ -192,7 +192,7 @@ def build_baseline_summary(
                 "probe_raw_result_count": probe_status["raw_result_count"],
                 "probe_error_type": probe_status["error_type"],
                 "probe_captcha_suspected": probe_status["captcha_suspected"],
-                "search_ok": search_status.get("ok", False),
+                "search_ok": search_status.get("status") == "success",
                 "search_result_count": search_status.get("result_count", 0),
                 "search_raw_result_count": search_status.get("raw_result_count", 0),
                 "search_error_type": search_status.get("error_type"),
@@ -200,6 +200,121 @@ def build_baseline_summary(
             }
         )
     return summary
+
+
+def platform_search_status(status: Mapping[str, Any]) -> str:
+    """Translate legacy per-platform execution data into contract status enums."""
+
+    if not status.get("ok", False):
+        return "error"
+    if status.get("result_count", 0) == 0:
+        return "no_results"
+    return "success"
+
+
+def top_level_search_status(
+    platform_statuses: Iterable[Mapping[str, Any]],
+) -> str:
+    """Derive the agent-facing search status from per-platform outcomes."""
+
+    normalized = [platform_search_status(status) for status in platform_statuses]
+    if any(status == "success" for status in normalized):
+        if any(status == "error" for status in normalized):
+            return "partial_success"
+        return "success"
+    if any(status == "error" for status in normalized):
+        return "error"
+    return "no_results"
+
+
+def platform_filter_mode(canonical: str, filters: SearchFilter) -> str:
+    """Describe whether a platform used default, native, or post-filtered search."""
+
+    if not client_side_filtering_applied(filters):
+        return "default"
+    if canonical in {"beike", "lianjia"}:
+        return "post_filtered"
+    return "native"
+
+
+def search_platform_meta(status: Mapping[str, Any], filters: SearchFilter) -> dict[str, Any]:
+    """Project execution status into the public search-platform contract."""
+
+    return {
+        "requested_platform": status["requested_platform"],
+        "platform": status["platform"],
+        "status": platform_search_status(status),
+        "result_count": status["result_count"],
+        "raw_result_count": status["raw_result_count"],
+        "elapsed_ms": status["elapsed_ms"],
+        "cookies_detected": status["cookies_detected"],
+        "captcha_suspected": status["captcha_suspected"],
+        "error_type": status["error_type"],
+        "error_message": status["error_message"],
+        "filter_mode": platform_filter_mode(status["platform"], filters),
+    }
+
+
+def listing_ref(listing: Mapping[str, Any]) -> str:
+    """Build a stable agent-facing listing reference."""
+
+    return f"{listing['platform']}:{listing['id']}"
+
+
+def annotate_duplicates(listings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Mark likely duplicates and move them behind retained primary results."""
+
+    primary_results: list[dict[str, Any]] = []
+    duplicate_results: list[dict[str, Any]] = []
+    possible_duplicate_count = 0
+
+    for listing in listings:
+        annotated = dict(listing)
+        annotated["listing_ref"] = listing_ref(annotated)
+
+        duplicate_of = next(
+            (
+                primary["listing_ref"]
+                for primary in primary_results
+                if is_possible_duplicate(annotated, primary)
+            ),
+            None,
+        )
+
+        annotated["duplicate_id"] = duplicate_of
+        if duplicate_of is None:
+            primary_results.append(annotated)
+            continue
+
+        possible_duplicate_count += 1
+        duplicate_results.append(annotated)
+
+    return primary_results + duplicate_results, possible_duplicate_count
+
+
+def is_possible_duplicate(candidate: Mapping[str, Any], primary: Mapping[str, Any]) -> bool:
+    """Use cautious first-wave heuristics to flag likely duplicate listings."""
+
+    if candidate["platform"] == primary["platform"]:
+        return False
+
+    candidate_community = normalize_text(candidate.get("community", ""))
+    primary_community = normalize_text(primary.get("community", ""))
+    if not candidate_community or candidate_community != primary_community:
+        return False
+
+    candidate_district = normalize_text(candidate.get("district", ""))
+    primary_district = normalize_text(primary.get("district", ""))
+    if candidate_district and primary_district and candidate_district != primary_district:
+        return False
+
+    return abs(float(candidate.get("area", 0.0)) - float(primary.get("area", 0.0))) <= 5.0
+
+
+def normalize_text(value: str) -> str:
+    """Normalize text for fuzzy identity comparisons."""
+
+    return re.sub(r"\s+", "", value).lower()
 
 
 def _matches_filters(house: House, filters: SearchFilter) -> bool:
@@ -290,6 +405,10 @@ class HouseScraperService:
 
         if limit < 1:
             raise ValueError("limit must be >= 1")
+        if limit > 30:
+            raise ValueError("limit must be <= 30")
+        if filters.page > 3:
+            raise ValueError("page must be <= 3")
 
         targets = resolve_platforms(platforms)
         executions = await self._run_platforms(filters, targets)
@@ -299,16 +418,25 @@ class HouseScraperService:
         for canonical in self._requested_order(targets):
             houses.extend(asdict(house) for house in executions[canonical].houses)
 
+        annotated_houses, possible_duplicate_count = annotate_duplicates(houses)
+        returned_houses = annotated_houses[:limit]
+        meta_platforms = [search_platform_meta(status, filters) for status in platform_status]
+        status = top_level_search_status(platform_status)
+
         return {
-            "ok": any(status["ok"] for status in platform_status),
-            "query": asdict(filters),
-            "client_side_filtering": client_side_filtering_applied(filters),
-            "requested_platforms": [target.requested for target in targets],
-            "resolved_platforms": [target.canonical for target in targets],
-            "platform_status": platform_status,
-            "result_count": len(houses),
-            "results_truncated": len(houses) > limit,
-            "results": houses[:limit],
+            "status": status,
+            "meta": {
+                "query": asdict(filters),
+                "client_side_filtering": client_side_filtering_applied(filters),
+                "requested_platforms": [target.requested for target in targets],
+                "resolved_platforms": [target.canonical for target in targets],
+                "platforms": meta_platforms,
+                "raw_count": len(annotated_houses),
+                "possible_duplicate_count": possible_duplicate_count,
+                "returned_count": len(returned_houses),
+                "truncated": len(annotated_houses) > limit,
+            },
+            "data": returned_houses,
         }
 
     async def baseline(

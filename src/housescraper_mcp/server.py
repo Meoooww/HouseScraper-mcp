@@ -56,7 +56,6 @@ async def search_listings(
     listing_type: Literal["buy", "rent"] = "buy",
     page: int = 1,
     limit: int = 20,
-    sort_by: str = "default",
 ) -> dict:
     """Search house listings and return normalized multi-platform results."""
 
@@ -70,7 +69,6 @@ async def search_listings(
         layout=layout,
         listing_type=listing_type,
         page=page,
-        sort_by=sort_by,
     )
     return await service.search(filters, platforms=platforms, limit=limit)
 

@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-DEFAULT_PLATFORMS = ("beike", "anjuke")
+DEFAULT_PLATFORMS = ("beike", "lianjia", "anjuke")
 
 _PLATFORM_MAP = {
     "beike": "beike",

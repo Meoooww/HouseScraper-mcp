@@ -1,10 +1,10 @@
 from housescraper_mcp.platforms import resolve_platforms
 
 
-def test_resolve_platforms_defaults_to_beike_and_anjuke() -> None:
+def test_resolve_platforms_defaults_to_all_supported_platforms() -> None:
     resolved = resolve_platforms(None)
-    assert [item.requested for item in resolved] == ["beike", "anjuke"]
-    assert [item.canonical for item in resolved] == ["beike", "anjuke"]
+    assert [item.requested for item in resolved] == ["beike", "lianjia", "anjuke"]
+    assert [item.canonical for item in resolved] == ["beike", "lianjia", "anjuke"]
 
 
 def test_resolve_platforms_keeps_lianjia_separate() -> None:
