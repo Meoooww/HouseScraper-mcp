@@ -320,6 +320,65 @@ def test_search_marks_possible_duplicates_and_moves_them_after_primary_results(
     assert response["data"][2]["duplicate_id"] == "beike:1"
 
 
+def test_search_treats_minor_district_name_variants_as_possible_duplicates(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "housescraper_mcp.service.prepare_cookies",
+        lambda domain, fallback_domains=(): {"session": "ok"},
+    )
+
+    service = HouseScraperService(
+        adapter_factories={
+            "beike": lambda: FakeAdapter(
+                [
+                    House(
+                        id="1",
+                        platform="beike",
+                        title="世茂滨江花园南向两房",
+                        price=500.0,
+                        price_unit="万",
+                        area=89.0,
+                        layout="2室1厅",
+                        community="世茂滨江花园",
+                        district="浦东",
+                        url="https://example.com/beike/1",
+                    )
+                ]
+            ),
+            "lianjia": lambda: FakeAdapter(
+                [
+                    House(
+                        id="2",
+                        platform="lianjia",
+                        title="世茂滨江花园景观两房",
+                        price=520.0,
+                        price_unit="万",
+                        area=90.5,
+                        layout="2室1厅",
+                        community="世茂滨江花园",
+                        district="浦东新区",
+                        url="https://example.com/lianjia/2",
+                    )
+                ]
+            ),
+        },
+        artifact_store=ArtifactStore(root=tmp_path),
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchFilter(city="上海"),
+            platforms=["beike", "lianjia"],
+            limit=10,
+        )
+    )
+
+    assert response["meta"]["possible_duplicate_count"] == 1
+    assert response["data"][1]["listing_ref"] == "lianjia:2"
+    assert response["data"][1]["duplicate_id"] == "beike:1"
+
+
 def test_search_counts_possible_duplicates_toward_limit(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "housescraper_mcp.service.prepare_cookies",

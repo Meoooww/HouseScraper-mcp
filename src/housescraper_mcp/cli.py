@@ -34,7 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
     search = subparsers.add_parser("search", help="Search listings")
     add_common_arguments(search)
     search.add_argument("--limit", type=int, default=20)
-    search.add_argument("--sort-by", default="default")
 
     baseline = subparsers.add_parser("baseline", help="Run live multi-platform baseline")
     baseline.add_argument("--city", default="上海")
@@ -73,7 +72,6 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         layout=args.layout,
         listing_type=args.listing_type,
         page=args.page,
-        sort_by=getattr(args, "sort_by", "default"),
     )
     platforms = args.platforms or None
     if args.command == "probe":

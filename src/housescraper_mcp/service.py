@@ -303,8 +303,8 @@ def is_possible_duplicate(candidate: Mapping[str, Any], primary: Mapping[str, An
     if not candidate_community or candidate_community != primary_community:
         return False
 
-    candidate_district = normalize_text(candidate.get("district", ""))
-    primary_district = normalize_text(primary.get("district", ""))
+    candidate_district = normalize_district(candidate.get("district", ""))
+    primary_district = normalize_district(primary.get("district", ""))
     if candidate_district and primary_district and candidate_district != primary_district:
         return False
 
@@ -315,6 +315,17 @@ def normalize_text(value: str) -> str:
     """Normalize text for fuzzy identity comparisons."""
 
     return re.sub(r"\s+", "", value).lower()
+
+
+def normalize_district(value: str) -> str:
+    """Normalize small naming variants in district labels across platforms."""
+
+    normalized = normalize_text(value)
+    if normalized.endswith("新区"):
+        return normalized[:-2]
+    if normalized.endswith("区"):
+        return normalized[:-1]
+    return normalized
 
 
 def _matches_filters(house: House, filters: SearchFilter) -> bool:

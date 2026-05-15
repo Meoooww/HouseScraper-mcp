@@ -7,7 +7,7 @@
 - `probe_sources`
   作用：探测平台当前是否可抓取，返回样本数据、cookie 状态、是否疑似触发反爬。
 - `search_listings`
-  作用：执行一次基础房源搜索，返回统一结构的结果。
+  作用：执行一次基础房源搜索，返回统一结构的结果，并在多平台聚合时标记疑似重复房源。
 
 ## 环境准备
 
@@ -97,9 +97,12 @@ uv run housescraper-mcp
 
 返回重点：
 
-- `results`：统一结构的房源列表
-- `platform_status`：每个平台的抓取状态
-- `client_side_filtering`：是否启用了客户端二次过滤
+- `status`：顶层搜索状态，使用 `success` / `partial_success` / `no_results` / `error`
+- `meta`：控制信息，包含平台状态、`raw_count`、`possible_duplicate_count`、`returned_count`、`truncated`
+- `data`：统一结构的房源列表
+- `data[*].listing_ref`：稳定房源引用，例如 `beike:107114117310`
+- `data[*].duplicate_id`：如果当前房源疑似重复，会指向保留主房源的 `listing_ref`
+- `meta.platforms[*].filter_mode`：标记平台是 `default`、`native` 还是 `post_filtered`
 
 ## 不通过 MCP，直接本地调用
 
@@ -118,6 +121,29 @@ uv run housescraper-cli probe --city 上海 --platform anjuke
 cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
 uv run housescraper-cli search --city 上海 --platform anjuke --max-price 500 --layout 2室 --limit 5
 ```
+
+验证多平台聚合 + 去重行为：
+
+```bash
+cd /Users/ljh/Documents/GitHub/HouseScraper-mcp
+uv run housescraper-cli search \
+  --city 上海 \
+  --platform beike \
+  --platform lianjia \
+  --platform anjuke \
+  --max-price 500 \
+  --layout 2室 \
+  --limit 10
+```
+
+检查重点：
+
+- 顶层 `status` 应该能区分 `success`、`partial_success`、`no_results`、`error`
+- `meta.possible_duplicate_count` 大于 `0` 时，说明本次聚合发现了疑似重复房源
+- `data[*].listing_ref` 应为稳定引用，例如 `beike:107114117310`
+- `data[*].duplicate_id` 为 `null` 时表示主房源；有值时表示它被判定为重复，并且值会指向主房源的 `listing_ref`
+- 疑似重复房源会被移动到主房源之后，但仍然计入 `limit`
+- `meta.platforms[*].raw_result_count` 可帮助判断平台原始抓取量与最终返回量的差异
 
 运行实时回归基线：
 
@@ -159,5 +185,6 @@ uv run housescraper-cli probe --city 上海 --platform anjuke
 - `beike` 主要读取 `ke.com` cookie。
 - `lianjia` 优先读取 `lianjia.com` cookie；如果浏览器里还没有链家自己的 cookie，会回退复用 `ke.com` 的共享登录票据。
 - `beike` / `lianjia` 带筛选条件时，当前会优先抓基础列表页，再在本地做价格 / 面积 / 户型 / 区域过滤，目的是降低验证码触发概率。
+- 多平台去重目前是保守的 advisory heuristic：主要依赖跨平台 `community + district + area` 近似匹配，只做标记和排序，不会把不同来源硬合并成一条记录。
 - `lianjia` 列表页里的区位字段更接近商圈/板块，不一定总是行政区。
 - 第一版还不支持“按楼盘名精确搜索”，目前更适合按城市、区域、总价、面积、户型做海选。
