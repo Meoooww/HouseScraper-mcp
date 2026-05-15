@@ -7,7 +7,8 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from housescraper_mcp.service import HouseScraperService, build_search_filter
+from housescraper_mcp.search_filtering import build_search_filter
+from housescraper_mcp.service import HouseScraperService
 
 mcp = FastMCP("HouseScraper MCP", json_response=True)
 service = HouseScraperService()

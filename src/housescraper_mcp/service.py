@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -19,6 +18,21 @@ from housescraper_mcp.adapters import BeikeClient, LianjiaClient
 from housescraper_mcp.artifacts import ArtifactStore
 from housescraper_mcp.cookies import prepare_cookies
 from housescraper_mcp.platforms import RequestedPlatform, group_by_canonical, resolve_platforms
+from housescraper_mcp.search_contract import annotate_duplicates as annotate_duplicates_module
+from housescraper_mcp.search_contract import attach_keyword_match as attach_keyword_match_module
+from housescraper_mcp.search_contract import is_possible_duplicate as is_possible_duplicate_module
+from housescraper_mcp.search_contract import keyword_match_fields as keyword_match_fields_module
+from housescraper_mcp.search_contract import listing_ref as listing_ref_module
+from housescraper_mcp.search_contract import parse_listing_ref as parse_listing_ref_module
+from housescraper_mcp.search_contract import platform_filter_mode as platform_filter_mode_module
+from housescraper_mcp.search_contract import platform_search_status as platform_search_status_module
+from housescraper_mcp.search_contract import search_platform_meta as search_platform_meta_module
+from housescraper_mcp.search_contract import serialize_detail as serialize_detail_module
+from housescraper_mcp.search_contract import top_level_search_status as top_level_search_status_module
+from housescraper_mcp.search_filtering import build_search_filter as build_search_filter_module
+from housescraper_mcp.search_filtering import client_side_filtering_applied as client_side_filtering_applied_module
+from housescraper_mcp.search_filtering import filter_houses as filter_houses_module
+from housescraper_mcp.search_filtering import upstream_filters_for_platform as upstream_filters_for_platform_module
 
 
 class SearchAdapter(Protocol):
@@ -98,14 +112,9 @@ def build_search_filter(
     sort_by: str = "default",
     keywords: str = "",
 ) -> SearchFilter:
-    """Build the shared upstream filter model."""
+    """Compatibility wrapper around the SearchFiltering module."""
 
-    if page < 1:
-        raise ValueError("page must be >= 1")
-    if listing_type not in {"buy", "rent"}:
-        raise ValueError("listing_type must be 'buy' or 'rent'")
-
-    return SearchFilter(
+    return build_search_filter_module(
         city=city,
         district=district,
         min_price=min_price,
@@ -121,22 +130,9 @@ def build_search_filter(
 
 
 def upstream_filters_for_platform(canonical: str, filters: SearchFilter) -> SearchFilter:
-    """Relax server-side filters for platforms that trigger anti-bot on deep URLs.
+    """Compatibility wrapper around the SearchFiltering module."""
 
-    Beike's filtered list URLs are much more likely to hit CAPTCHA than the base
-    city list page. For the MVP we prefer a stable first-page fetch plus client-side
-    filtering over a brittle server-side query that often fails entirely.
-    """
-
-    if canonical not in {"beike", "lianjia"} or not client_side_filtering_applied(filters):
-        return filters
-
-    return SearchFilter(
-        city=filters.city,
-        listing_type=filters.listing_type,
-        page=filters.page,
-        sort_by="default",
-    )
+    return upstream_filters_for_platform_module(canonical, filters)
 
 
 def classify_error(exc: Exception) -> tuple[str, bool]:
@@ -155,26 +151,15 @@ def classify_error(exc: Exception) -> tuple[str, bool]:
 
 
 def filter_houses(houses: list[House], filters: SearchFilter) -> list[House]:
-    """Apply client-side filters when upstream fallback pages ignore constraints."""
+    """Compatibility wrapper around the SearchFiltering module."""
 
-    return [house for house in houses if _matches_filters(house, filters)]
+    return filter_houses_module(houses, filters)
 
 
 def client_side_filtering_applied(filters: SearchFilter) -> bool:
-    """Whether the current query relies on post-filtering for accuracy."""
+    """Compatibility wrapper around the SearchFiltering module."""
 
-    return any(
-        value not in (None, "")
-        for value in (
-            filters.district,
-            filters.min_price,
-            filters.max_price,
-            filters.min_area,
-            filters.max_area,
-            filters.layout,
-            filters.keywords,
-        )
-    )
+    return client_side_filtering_applied_module(filters)
 
 
 def build_baseline_summary(
@@ -214,230 +199,71 @@ def build_baseline_summary(
 
 
 def platform_search_status(status: Mapping[str, Any]) -> str:
-    """Translate legacy per-platform execution data into contract status enums."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    if not status.get("ok", False):
-        return "error"
-    if status.get("result_count", 0) == 0:
-        return "no_results"
-    return "success"
+    return platform_search_status_module(status)
 
 
 def top_level_search_status(
     platform_statuses: Iterable[Mapping[str, Any]],
 ) -> str:
-    """Derive the agent-facing search status from per-platform outcomes."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    normalized = [platform_search_status(status) for status in platform_statuses]
-    if any(status == "success" for status in normalized):
-        if any(status == "error" for status in normalized):
-            return "partial_success"
-        return "success"
-    if any(status == "error" for status in normalized):
-        return "error"
-    return "no_results"
+    return top_level_search_status_module(platform_statuses)
 
 
 def platform_filter_mode(canonical: str, filters: SearchFilter) -> str:
-    """Describe whether a platform used default, native, or post-filtered search."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    if not client_side_filtering_applied(filters):
-        return "default"
-    if filters.keywords:
-        return "post_filtered"
-    if canonical in {"beike", "lianjia"}:
-        return "post_filtered"
-    return "native"
+    return platform_filter_mode_module(canonical, filters)
 
 
 def search_platform_meta(status: Mapping[str, Any], filters: SearchFilter) -> dict[str, Any]:
-    """Project execution status into the public search-platform contract."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    return {
-        "requested_platform": status["requested_platform"],
-        "platform": status["platform"],
-        "status": platform_search_status(status),
-        "result_count": status["result_count"],
-        "raw_result_count": status["raw_result_count"],
-        "elapsed_ms": status["elapsed_ms"],
-        "cookies_detected": status["cookies_detected"],
-        "captcha_suspected": status["captcha_suspected"],
-        "error_type": status["error_type"],
-        "error_message": status["error_message"],
-        "filter_mode": platform_filter_mode(status["platform"], filters),
-    }
+    return search_platform_meta_module(status, filters)
 
 
 def listing_ref(listing: Mapping[str, Any]) -> str:
-    """Build a stable agent-facing listing reference."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    return f"{listing['platform']}:{listing['id']}"
+    return listing_ref_module(listing)
 
 
 def parse_listing_ref(value: str) -> tuple[str, str]:
-    """Parse a stable agent-facing listing reference."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    platform, separator, house_id = value.partition(":")
-    if not separator or not platform or not house_id:
-        raise ValueError("listing_ref must look like '<platform>:<id>'")
-    return platform, house_id
+    return parse_listing_ref_module(value)
 
 
 def serialize_detail(detail: HouseDetail) -> dict[str, Any]:
-    """Project HouseDetail into the public detail contract."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    payload = asdict(detail)
-    payload["listing_ref"] = listing_ref(payload)
-    return payload
+    return serialize_detail_module(detail)
 
 
 def attach_keyword_match(listing: dict[str, Any], keyword: str) -> dict[str, Any]:
-    """Attach keyword match visibility for search results."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    if not keyword:
-        return listing
-
-    matched_fields = keyword_match_fields(listing, keyword)
-    if matched_fields:
-        listing["keyword_match"] = {
-            "keyword": keyword,
-            "matched_fields": matched_fields,
-        }
-    return listing
+    return attach_keyword_match_module(listing, keyword)
 
 
 def annotate_duplicates(listings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    """Mark likely duplicates and move them behind retained primary results."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    primary_results: list[dict[str, Any]] = []
-    duplicate_results: list[dict[str, Any]] = []
-    possible_duplicate_count = 0
-
-    for listing in listings:
-        annotated = dict(listing)
-        annotated["listing_ref"] = listing_ref(annotated)
-
-        duplicate_of = next(
-            (
-                primary["listing_ref"]
-                for primary in primary_results
-                if is_possible_duplicate(annotated, primary)
-            ),
-            None,
-        )
-
-        annotated["duplicate_id"] = duplicate_of
-        if duplicate_of is None:
-            primary_results.append(annotated)
-            continue
-
-        possible_duplicate_count += 1
-        duplicate_results.append(annotated)
-
-    return primary_results + duplicate_results, possible_duplicate_count
+    return annotate_duplicates_module(listings)
 
 
 def is_possible_duplicate(candidate: Mapping[str, Any], primary: Mapping[str, Any]) -> bool:
-    """Use cautious first-wave heuristics to flag likely duplicate listings."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    if candidate["platform"] == primary["platform"]:
-        return False
-
-    candidate_community = normalize_text(candidate.get("community", ""))
-    primary_community = normalize_text(primary.get("community", ""))
-    if not candidate_community or candidate_community != primary_community:
-        return False
-
-    candidate_district = normalize_district(candidate.get("district", ""))
-    primary_district = normalize_district(primary.get("district", ""))
-    if candidate_district and primary_district and candidate_district != primary_district:
-        return False
-
-    return abs(float(candidate.get("area", 0.0)) - float(primary.get("area", 0.0))) <= 5.0
-
-
-def normalize_text(value: str) -> str:
-    """Normalize text for fuzzy identity comparisons."""
-
-    return re.sub(r"\s+", "", value).lower()
-
-
-def normalize_district(value: str) -> str:
-    """Normalize small naming variants in district labels across platforms."""
-
-    normalized = normalize_text(value)
-    if normalized.endswith("新区"):
-        return normalized[:-2]
-    if normalized.endswith("区"):
-        return normalized[:-1]
-    return normalized
+    return is_possible_duplicate_module(candidate, primary)
 
 
 def keyword_match_fields(listing: Mapping[str, Any], keyword: str) -> list[str]:
-    """Return the visible fields that matched the requested keyword."""
+    """Compatibility wrapper around the SearchResultEnvelope module."""
 
-    normalized_keyword = normalize_text(keyword)
-    if not normalized_keyword:
-        return []
-
-    matches: list[str] = []
-    for field in ("title", "community", "address", "district"):
-        value = str(listing.get(field, "") or "")
-        if normalized_keyword in normalize_text(value):
-            matches.append(field)
-
-    tags = listing.get("tags", [])
-    if any(normalized_keyword in normalize_text(str(tag)) for tag in tags):
-        matches.append("tags")
-
-    return matches
-
-
-def _matches_filters(house: House, filters: SearchFilter) -> bool:
-    if filters.district:
-        if not house.district or filters.district not in house.district:
-            return False
-
-    if filters.min_price is not None and house.price < filters.min_price:
-        return False
-    if filters.max_price is not None and house.price > filters.max_price:
-        return False
-
-    if filters.min_area is not None and house.area < filters.min_area:
-        return False
-    if filters.max_area is not None and house.area > filters.max_area:
-        return False
-
-    if filters.layout:
-        expected_rooms = _extract_room_count(filters.layout)
-        actual_rooms = _extract_room_count(house.layout)
-        if actual_rooms is None:
-            return False
-        if expected_rooms is not None and actual_rooms != expected_rooms:
-            return False
-        if expected_rooms is None and filters.layout not in house.layout:
-            return False
-
-    if filters.keywords and not keyword_match_fields(
-        {
-            "title": house.title,
-            "community": house.community,
-            "address": house.address,
-            "district": house.district,
-            "tags": house.tags,
-        },
-        filters.keywords,
-    ):
-        return False
-
-    return True
-
-
-def _extract_room_count(layout: str) -> int | None:
-    match = re.search(r"(\d+)\s*室", layout)
-    if match is None:
-        return None
-    return int(match.group(1))
+    return keyword_match_fields_module(listing, keyword)
 
 
 class HouseScraperService:

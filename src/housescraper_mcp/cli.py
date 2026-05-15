@@ -8,7 +8,8 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from housescraper_mcp.service import HouseScraperService, build_search_filter
+from housescraper_mcp.search_filtering import build_search_filter
+from housescraper_mcp.service import HouseScraperService
 
 
 def build_parser() -> argparse.ArgumentParser:
