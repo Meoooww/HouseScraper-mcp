@@ -2,33 +2,207 @@
 
 import asyncio
 import collections
+import gzip
+import os
+import platform
 import random
+import re
+import shutil
+import subprocess
 import time
+import zlib
+from functools import lru_cache
 
 import httpx
 
-# Chrome 145 on macOS
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/145.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "DNT": "1",
-    "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"macOS"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Priority": "u=0, i",
-    "Upgrade-Insecure-Requests": "1",
-    "Connection": "keep-alive",
-}
+try:
+    import brotli
+except ImportError:  # pragma: no cover - optional at runtime, covered in behavior
+    brotli = None
+
+
+def _detect_browser_family() -> str:
+    system = platform.system()
+    if system == "Windows":
+        edge_paths = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+        if any(os.path.exists(path) for path in edge_paths):
+            return "edge"
+        return "chrome"
+    if system == "Darwin":
+        return "chrome"
+    return "chrome"
+
+
+def _browser_version_command(family: str) -> list[str] | None:
+    system = platform.system()
+    if family == "edge" and system == "Windows":
+        for path in [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]:
+            if os.path.exists(path):
+                return [path, "--version"]
+        return None
+
+    candidates = {
+        "chrome": [
+            "google-chrome",
+            "chrome",
+            "chromium",
+            "chromium-browser",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+    }.get(family, [])
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return [resolved, "--version"]
+        if os.path.exists(candidate):
+            return [candidate, "--version"]
+    return None
+
+
+@lru_cache(maxsize=4)
+def _detect_browser_major_version(family: str) -> str:
+    command = _browser_version_command(family)
+    if command:
+        try:
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            output = f"{proc.stdout} {proc.stderr}"
+            match = re.search(r"(\d+)\.", output)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+    return "148" if family == "edge" else "145"
+
+
+def build_default_headers() -> dict[str, str]:
+    family = _detect_browser_family()
+    version = _detect_browser_major_version(family)
+    system = platform.system()
+
+    platform_token = {
+        "Windows": '"Windows"',
+        "Darwin": '"macOS"',
+        "Linux": '"Linux"',
+    }.get(system, '"Windows"')
+
+    if family == "edge":
+        user_agent = (
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{version}.0.0.0 Safari/537.36 Edg/{version}.0.0.0"
+        )
+        sec_ch_ua = (
+            f'"Chromium";v="{version}", '
+            f'"Microsoft Edge";v="{version}", '
+            f'"Not=A?Brand";v="24"'
+        )
+    elif system == "Darwin":
+        user_agent = (
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{version}.0.0.0 Safari/537.36"
+        )
+        sec_ch_ua = (
+            f'"Chromium";v="{version}", '
+            f'"Google Chrome";v="{version}", '
+            f'"Not.A/Brand";v="99"'
+        )
+    elif system == "Linux":
+        user_agent = (
+            f"Mozilla/5.0 (X11; Linux x86_64) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{version}.0.0.0 Safari/537.36"
+        )
+        sec_ch_ua = (
+            f'"Chromium";v="{version}", '
+            f'"Google Chrome";v="{version}", '
+            f'"Not.A/Brand";v="99"'
+        )
+    else:
+        user_agent = (
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{version}.0.0.0 Safari/537.36"
+        )
+        sec_ch_ua = (
+            f'"Chromium";v="{version}", '
+            f'"Google Chrome";v="{version}", '
+            f'"Not.A/Brand";v="99"'
+        )
+
+    return {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": platform_token,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Priority": "u=0, i",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive",
+    }
+
+
+DEFAULT_HEADERS = build_default_headers()
+
+
+def _decode_response_bytes(resp: httpx.Response) -> bytes | None:
+    encoding = resp.headers.get("content-encoding", "").lower()
+    if not encoding:
+        return None
+
+    payload = resp.content
+    try:
+        if "br" in encoding and brotli is not None:
+            return brotli.decompress(payload)
+        if "gzip" in encoding:
+            return gzip.decompress(payload)
+        if "deflate" in encoding:
+            try:
+                return zlib.decompress(payload)
+            except zlib.error:
+                return zlib.decompress(payload, -zlib.MAX_WBITS)
+    except Exception:
+        return None
+    return None
+
+
+def decode_response_content(resp: httpx.Response) -> str:
+    decoded = _decode_response_bytes(resp)
+    if decoded is None:
+        return resp.text
+
+    charset = resp.encoding or "utf-8"
+    return decoded.decode(charset, errors="replace")
+
+
+def _normalize_response_content(resp: httpx.Response):
+    decoded = _decode_response_bytes(resp)
+    if decoded is None:
+        return
+    resp._content = decoded
+    if "content-encoding" in resp.headers:
+        del resp.headers["content-encoding"]
 
 # Retry config
 MAX_RETRIES = 3
@@ -53,7 +227,7 @@ class HttpClient:
 
     def __init__(self, base_url: str = "", referer: str = ""):
         self._request_history: collections.deque = collections.deque(maxlen=BURST_WINDOW_SIZE)
-        headers = dict(DEFAULT_HEADERS)
+        headers = build_default_headers()
         if referer:
             headers["Referer"] = referer
         self._client = httpx.AsyncClient(
@@ -108,6 +282,7 @@ class HttpClient:
         for attempt in range(MAX_RETRIES):
             try:
                 resp = await self._client.get(url, **kwargs)
+                _normalize_response_content(resp)
                 if resp.status_code == 429 or resp.status_code >= 500:
                     wait = min(BACKOFF_BASE * (2 ** attempt), BACKOFF_CAP)
                     # Permanently increase base delay on rate-limit

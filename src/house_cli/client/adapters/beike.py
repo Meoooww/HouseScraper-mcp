@@ -44,6 +44,20 @@ class BeikeClient(BaseClient):
 
     platform_name = "beike"
 
+    @staticmethod
+    def _is_blocked_response(resp, html: str) -> bool:
+        final_url = str(getattr(resp, "url", ""))
+        has_listing_markup = (
+            '<ul class="sellListContent"' in html
+            or 'class="sellListContent"' in html
+        )
+        return (
+            "CAPTCHA" in html
+            or "hip.ke.com/captcha" in final_url
+            or "clogin.ke.com/login" in final_url
+            or (len(html) < 5000 and not has_listing_markup)
+        )
+
     def _build_list_url(self, filters: SearchFilter) -> str:
         city_abbr = CITY_ABBR.get(filters.city, "sh")
         base = f"https://{city_abbr}.ke.com/ershoufang/"
@@ -116,6 +130,7 @@ class BeikeClient(BaseClient):
         url = self._build_list_url(filters)
         city_abbr = CITY_ABBR.get(filters.city, "sh")
         referer = f"https://{city_abbr}.ke.com/ershoufang/"
+        fallback_url = referer
 
         cookies = load_or_extract_cookies("ke.com")
         async with HttpClient(referer=referer) as client:
@@ -127,10 +142,20 @@ class BeikeClient(BaseClient):
                 if new_cookies:
                     merged = {**cookies, **new_cookies}
                     save_cookies("ke.com", merged)
+                    cookies = merged
 
             html = resp.text
+            if url != fallback_url and self._is_blocked_response(resp, html):
+                resp = await client.get(fallback_url, cookies=cookies)
+                if resp.cookies:
+                    new_cookies = {k: v for k, v in resp.cookies.items()}
+                    if new_cookies:
+                        merged = {**cookies, **new_cookies}
+                        save_cookies("ke.com", merged)
+                        cookies = merged
+                html = resp.text
 
-        if "CAPTCHA" in html or len(html) < 5000:
+        if self._is_blocked_response(resp, html):
             raise RuntimeError(
                 "ke.com returned CAPTCHA. Please visit ke.com in your browser first, "
                 "then export cookies to ~/.config/house-cli/cookies.json"

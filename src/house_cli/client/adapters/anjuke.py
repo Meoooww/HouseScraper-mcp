@@ -30,6 +30,7 @@ from house_cli.client.http import HttpClient
 from house_cli.client.auth import load_or_extract_cookies, save_cookies
 from house_cli.models.house import House, HouseDetail
 from house_cli.models.filter import SearchFilter
+from house_cli.models.cities import DISTRICTS
 
 ANJUKE_CITY = {
     "北京": "beijing", "上海": "shanghai", "广州": "guangzhou", "深圳": "shenzhen",
@@ -121,8 +122,13 @@ class AnjukeClient(BaseClient):
         }
 
     def _build_list_url(self, filters: SearchFilter) -> str:
-        entry = self.build_filter_flow_entry(filters)
-        return entry["url"]
+        city = self._resolve_city_slug(filters.city)
+        district_map = DISTRICTS.get(filters.city, {})
+        district_slug = district_map.get(filters.district or "", "")
+
+        if district_slug:
+            return f"https://{city}.anjuke.com/sale/{district_slug}/"
+        return f"https://{city}.anjuke.com/sale/?from=HomePage_Search"
 
     @staticmethod
     def _is_antibot_gateway_page(html: str) -> bool:
@@ -254,8 +260,34 @@ class AnjukeClient(BaseClient):
         return d.price_history
 
     def _parse_list(self, html: str, city: str) -> list[House]:
+        if "property-content-title-name" in html:
+            return self._parse_sale_list(html, city)
+        return self._parse_recommend_list(html, city)
+
+    def _parse_sale_list(self, html: str, city: str) -> list[House]:
         houses: list[House] = []
-        city_slug = ANJUKE_CITY.get(city, "shanghai")
+
+        card_pattern = re.compile(
+            r'<a[^>]+class="property-ex"[^>]+href="(https?://[^"]*?/prop/view/([^?"]+)[^"]*)"[^>]*>'
+            r'(.*?)</a>',
+            re.DOTALL,
+        )
+
+        for m in card_pattern.finditer(html):
+            url = unescape(m.group(1))
+            house_id = m.group(2)
+            card_html = m.group(3)
+            try:
+                house = self._parse_sale_card(card_html, house_id, url, city)
+                if house:
+                    houses.append(house)
+            except Exception:
+                continue
+
+        return houses
+
+    def _parse_recommend_list(self, html: str, city: str) -> list[House]:
+        houses: list[House] = []
 
         # Find all recommendation cards with price-one-num (actual house listings)
         # Split by <a> tags that link to /prop/view/
@@ -275,7 +307,7 @@ class AnjukeClient(BaseClient):
                 continue
 
             try:
-                h = self._parse_card(card_html, house_id, url, city)
+                h = self._parse_recommend_card(card_html, house_id, url, city)
                 if h:
                     houses.append(h)
             except Exception:
@@ -283,7 +315,115 @@ class AnjukeClient(BaseClient):
 
         return houses
 
-    def _parse_card(self, card: str, house_id: str, url: str, city: str) -> House | None:
+    def _parse_sale_card(self, card: str, house_id: str, url: str, city: str) -> House | None:
+        title = ""
+        title_m = re.search(
+            r'class="property-content-title-name"[^>]*title="([^"]+)"',
+            card,
+        )
+        if title_m:
+            title = _clean(title_m.group(1))
+        else:
+            title_m = re.search(
+                r'class="property-content-title-name"[^>]*>([^<]+)',
+                card,
+            )
+            title = _clean(title_m.group(1)) if title_m else ""
+
+        layout = ""
+        attr_m = re.search(
+            r'class="[^"]*property-content-info-attribute[^"]*"[^>]*>(.*?)</p>',
+            card,
+            re.DOTALL,
+        )
+        if attr_m:
+            spans = re.findall(r'<span[^>]*>([^<]+)</span>', attr_m.group(1))
+            layout = "".join(seg.strip() for seg in spans)
+
+        area = 0.0
+        orientation = ""
+        floor = ""
+        info_texts = re.findall(
+            r'class="property-content-info-text"[^>]*>\s*([^<]+?)\s*<',
+            card,
+        )
+        for text in info_texts:
+            text = _clean(text)
+            if "㎡" in text:
+                area_m = re.search(r"([\d.]+)", text)
+                if area_m:
+                    area = float(area_m.group(1))
+            elif "层" in text:
+                floor = text
+            elif text in (
+                "南", "北", "东", "西", "南北", "东南", "东北", "西南", "西北", "东西"
+            ):
+                orientation = text
+
+        community = ""
+        community_m = re.search(
+            r'class="property-content-info-comm-name"[^>]*>([^<]+)',
+            card,
+        )
+        if community_m:
+            community = _clean(community_m.group(1))
+
+        district = ""
+        address_m = re.search(
+            r'class="property-content-info-comm-address"[^>]*>(.*?)</p>',
+            card,
+            re.DOTALL,
+        )
+        if address_m:
+            address_text = _clean(re.sub(r"<[^>]+>", " ", address_m.group(1)))
+            if address_text:
+                district = address_text.split()[0]
+
+        price = 0.0
+        price_m = re.search(r'class="property-price-total"[^>]*>\s*([\d.]+)', card)
+        if price_m:
+            price = float(price_m.group(1))
+
+        unit_price = None
+        up_m = re.search(
+            r'class="property-price-average"[^>]*>\s*([\d,]+)元/㎡',
+            card,
+        )
+        if up_m:
+            unit_price = float(up_m.group(1).replace(",", ""))
+
+        tags = [
+            _clean(tag)
+            for tag in re.findall(
+                r'class="property-content-tags"[^>]*>.*?<span[^>]*>([^<]+)</span>',
+                card,
+                re.DOTALL,
+            )
+            if _clean(tag)
+        ]
+
+        if not price:
+            return None
+
+        return House(
+            id=house_id,
+            platform="anjuke",
+            title=title,
+            price=price,
+            price_unit="万",
+            area=area,
+            unit_price=unit_price,
+            layout=layout,
+            floor=floor,
+            orientation=orientation,
+            community=community,
+            district=district,
+            city=city,
+            url=url,
+            tags=tags,
+        )
+
+    def _parse_recommend_card(self, card: str, house_id: str, url: str, city: str) -> House | None:
         # Community / title
         title = ""
         title_m = re.search(r'class="item-info-title"[^>]*>([^<]+)', card)
