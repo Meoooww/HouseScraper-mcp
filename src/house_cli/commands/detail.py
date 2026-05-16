@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from house_cli.client.adapters import ADAPTER_REGISTRY
+from house_cli.client.adapters.beike import BeikeClient
 
 err_console = Console(stderr=True)
 
@@ -47,6 +48,16 @@ def _render_detail(d):
         table.add_row("建筑类型", d.building_type)
     if d.elevator:
         table.add_row("电梯", d.elevator)
+    if d.transaction_ownership:
+        table.add_row("交易权属", d.transaction_ownership)
+    if d.house_usage:
+        table.add_row("房屋用途", d.house_usage)
+    if d.ownership:
+        table.add_row("产权所属", d.ownership)
+    if d.mortgage_info:
+        table.add_row("抵押信息", d.mortgage_info)
+    if d.deed_status:
+        table.add_row("房本备件", d.deed_status)
     if d.nearby_subway:
         table.add_row("地铁", ", ".join(d.nearby_subway))
     if d.nearby_schools:
@@ -58,11 +69,12 @@ def _render_detail(d):
 
 @click.command()
 @click.argument("house_id")
+@click.option("--city", default="上海", help="City for city-scoped detail URLs, e.g. 珠海")
 @click.option("--output", "output_format", type=click.Choice(["table", "json", "yaml"]), default="table")
-def detail(house_id, output_format):
+def detail(house_id, city, output_format):
     """Show house detail. HOUSE_ID format: platform:id (e.g. beike:abc123)."""
     platform, raw_id = _parse_house_id(house_id)
-    adapter = ADAPTER_REGISTRY[platform]()
+    adapter = BeikeClient(city=city) if platform == "beike" else ADAPTER_REGISTRY[platform]()
     d = asyncio.run(adapter.detail(raw_id))
 
     if output_format == "json":

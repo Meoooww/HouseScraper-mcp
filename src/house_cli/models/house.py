@@ -37,6 +37,11 @@ class HouseDetail(House):
     green_ratio: str = ""  # 绿化率
     volume_ratio: str = ""  # 容积率
     property_fee: str = ""  # 物业费
+    transaction_ownership: str = ""  # 交易权属
+    house_usage: str = ""  # 房屋用途
+    ownership: str = ""  # 产权所属
+    mortgage_info: str = ""  # 抵押信息
+    deed_status: str = ""  # 房本备件/房本情况
     nearby_schools: list[str] = field(default_factory=list)
     nearby_subway: list[str] = field(default_factory=list)
     price_history: list[dict] = field(default_factory=list)

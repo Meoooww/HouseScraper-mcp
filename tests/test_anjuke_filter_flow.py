@@ -46,7 +46,7 @@ def test_anjuke_filter_flow_entry_normalizes_non_empty_filter_values():
 
     entry = client.build_filter_flow_entry(filters)
 
-    assert entry["url"] == "https://shanghai.anjuke.com/sale/?from=HomePage_Search"
+    assert entry["url_template"] == "https://{resolved_city_slug}.anjuke.com/sale/?from=HomePage_Search"
     assert entry["source"] == "HomePage_Search"
     assert entry["platform"] == "anjuke"
 

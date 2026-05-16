@@ -32,32 +32,77 @@ from house_cli.models.house import House, HouseDetail
 from house_cli.models.filter import SearchFilter
 from house_cli.models.cities import DISTRICTS
 
-ANJUKE_CITY = {
-    "北京": "beijing", "上海": "shanghai", "广州": "guangzhou", "深圳": "shenzhen",
-    "成都": "chengdu", "杭州": "hangzhou", "重庆": "chongqing", "武汉": "wuhan",
-    "苏州": "suzhou", "南京": "nanjing", "天津": "tianjin", "西安": "xian",
-    "长沙": "changsha", "郑州": "zhengzhou", "东莞": "dongguan", "青岛": "qingdao",
-    "合肥": "hefei", "佛山": "foshan", "宁波": "ningbo", "昆明": "kunming",
-    "沈阳": "shenyang", "大连": "dalian", "厦门": "xiamen", "济南": "jinan",
-    "无锡": "wuxi", "福州": "fuzhou", "哈尔滨": "haerbin", "石家庄": "shijiazhuang",
-}
+CITY_INDEX_URL = "https://www.anjuke.com/sy-city.html"
 
 
 class AnjukeClient(BaseClient):
     """Anjuke adapter (buy + rent). Requires browser cookies."""
 
     platform_name = "anjuke"
+    _city_slug_cache: dict[str, str] = {}
 
     @staticmethod
-    def _resolve_city_slug(city_name: str) -> str:
-        city_slug = ANJUKE_CITY.get(city_name)
-        if city_slug:
-            return city_slug
-        supported = "、".join(sorted(ANJUKE_CITY.keys()))
-        raise RuntimeError(
-            f"Unsupported city for anjuke: {city_name}. "
-            f"Supported cities: {supported}"
-        )
+    def _clean_city_label(text: str) -> str:
+        s = _clean(re.sub(r"<[^>]+>", " ", text))
+        s = re.sub(r"\s+", "", s)
+        s = s.replace("安居客", "")
+        s = re.sub(r"(二手房|新房|租房|房产网|房产信息网|楼盘|买房|卖房)$", "", s)
+        m = re.search(r"[\u4e00-\u9fff]{2,6}", s)
+        return m.group(0) if m else ""
+
+    @classmethod
+    def _extract_city_slug_map(cls, html: str) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        # Primary pattern: https://{slug}.anjuke.com/... city links
+        for m in re.finditer(
+            r'<a[^>]*href="https?://([a-z0-9-]+)\.anjuke\.com[^"]*"[^>]*>(.*?)</a>',
+            html,
+            re.DOTALL,
+        ):
+            slug = m.group(1).strip().lower()
+            label = cls._clean_city_label(m.group(2))
+            if label and slug:
+                mapping[label] = slug
+
+        # Supplementary: links where city appears in title attribute.
+        for m in re.finditer(
+            r'<a[^>]*href="https?://([a-z0-9-]+)\.anjuke\.com[^"]*"[^>]*title="([^"]+)"[^>]*>',
+            html,
+            re.DOTALL,
+        ):
+            slug = m.group(1).strip().lower()
+            label = cls._clean_city_label(m.group(2))
+            if label and slug:
+                mapping[label] = slug
+
+        return mapping
+
+    async def _resolve_city_slug(self, city_name: str, client: HttpClient, cookies: dict) -> str:
+        if re.fullmatch(r"[a-z0-9-]+", city_name):
+            return city_name.lower()
+
+        cached = self._city_slug_cache.get(city_name)
+        if cached:
+            return cached
+
+        try:
+            client.set_referer("https://www.anjuke.com/")
+            resp = await client.get(CITY_INDEX_URL, cookies=cookies)
+            mapping = self._extract_city_slug_map(resp.text)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to resolve Anjuke city slug for {city_name}: failed to load {CITY_INDEX_URL}"
+            ) from exc
+
+        slug = mapping.get(city_name)
+        if not slug:
+            raise RuntimeError(
+                f"Unable to resolve Anjuke city slug for {city_name}. "
+                f"Confirm this city exists on anjuke and is visible in {CITY_INDEX_URL}"
+            )
+
+        self._city_slug_cache[city_name] = slug
+        return slug
 
     def filter_flow_contract(self) -> dict:
         """Describe Anjuke sale filter flow request/response contract."""
@@ -94,7 +139,6 @@ class AnjukeClient(BaseClient):
 
     def build_filter_flow_entry(self, filters: SearchFilter) -> dict:
         """Build a normalized filter-flow entry payload for introspection and tracing."""
-        city = self._resolve_city_slug(filters.city)
         request_params = {
             "city": filters.city,
             "district": filters.district,
@@ -117,18 +161,17 @@ class AnjukeClient(BaseClient):
         return {
             "platform": "anjuke",
             "source": "HomePage_Search",
-            "url": f"https://{city}.anjuke.com/sale/?from=HomePage_Search",
+            "url_template": "https://{resolved_city_slug}.anjuke.com/sale/?from=HomePage_Search",
             "request_params": request_params,
         }
 
-    def _build_list_url(self, filters: SearchFilter) -> str:
-        city = self._resolve_city_slug(filters.city)
+    def _build_list_url(self, city_slug: str, filters: SearchFilter) -> str:
         district_map = DISTRICTS.get(filters.city, {})
         district_slug = district_map.get(filters.district or "", "")
 
         if district_slug:
-            return f"https://{city}.anjuke.com/sale/{district_slug}/"
-        return f"https://{city}.anjuke.com/sale/?from=HomePage_Search"
+            return f"https://{city_slug}.anjuke.com/sale/{district_slug}/"
+        return f"https://{city_slug}.anjuke.com/sale/?from=HomePage_Search"
 
     @staticmethod
     def _is_antibot_gateway_page(html: str) -> bool:
@@ -160,13 +203,13 @@ class AnjukeClient(BaseClient):
         return merged
 
     async def search(self, filters: SearchFilter) -> list[House]:
-        city = self._resolve_city_slug(filters.city)
         cookies = load_or_extract_cookies("anjuke.com")
         referer = "https://www.anjuke.com/sy-city.html"
 
         flow = getattr(filters, "anjuke_flow", "auto")
-        sale_url = self._build_list_url(filters)
         async with HttpClient(referer=referer) as client:
+            city = await self._resolve_city_slug(filters.city, client, cookies)
+            sale_url = self._build_list_url(city, filters)
             if flow == "recommend":
                 homepage_url = f"https://{city}.anjuke.com/?from=AJK_Web_City"
                 try:
@@ -207,17 +250,16 @@ class AnjukeClient(BaseClient):
             except Exception:
                 html = ""
 
-            if flow == "search":
-                return self._parse_list(html, filters.city)
-
-            # auto fallback: city homepage has recommended listings
-            homepage_url = f"https://{city}.anjuke.com/?from=AJK_Web_City"
-            try:
-                client.set_referer(referer)
-                resp = await client.get(homepage_url, cookies=cookies)
-                html = resp.text
-            except Exception:
-                html = ""
+            if flow in {"search", "auto"}:
+                houses = self._parse_list(html, filters.city)
+                if houses:
+                    return houses
+                if self._is_antibot_gateway_page(html) or "esfcommon-captcha" in html:
+                    raise RuntimeError(
+                        "anjuke.com sale flow is blocked by anti-bot challenge. "
+                        "Please complete browser verification and refresh anjuke.com cookies."
+                    )
+                return houses
 
         houses = self._parse_list(html, filters.city)
         if houses:
@@ -267,16 +309,30 @@ class AnjukeClient(BaseClient):
     def _parse_sale_list(self, html: str, city: str) -> list[House]:
         houses: list[House] = []
 
-        card_pattern = re.compile(
-            r'<a[^>]+class="property-ex"[^>]+href="(https?://[^"]*?/prop/view/([^?"]+)[^"]*)"[^>]*>'
-            r'(.*?)</a>',
-            re.DOTALL,
+        card_starts = list(
+            re.finditer(
+                r'<a\b[^>]*class="[^"]*\bproperty-ex\b[^"]*"[^>]*>',
+                html,
+                re.DOTALL,
+            )
         )
 
-        for m in card_pattern.finditer(html):
-            url = unescape(m.group(1))
-            house_id = m.group(2)
-            card_html = m.group(3)
+        for index, start_m in enumerate(card_starts):
+            card_start = start_m.start()
+            card_end = (
+                card_starts[index + 1].start()
+                if index + 1 < len(card_starts)
+                else len(html)
+            )
+            card_html = html[card_start:card_end]
+            href_m = re.search(
+                r'href="(https?://[^"]*?/prop/view/([^?"]+)[^"]*)"',
+                start_m.group(0),
+            )
+            if not href_m:
+                continue
+            url = unescape(href_m.group(1))
+            house_id = href_m.group(2)
             try:
                 house = self._parse_sale_card(card_html, house_id, url, city)
                 if house:
@@ -360,47 +416,37 @@ class AnjukeClient(BaseClient):
             ):
                 orientation = text
 
-        community = ""
-        community_m = re.search(
-            r'class="property-content-info-comm-name"[^>]*>([^<]+)',
-            card,
-        )
-        if community_m:
-            community = _clean(community_m.group(1))
+        community = _first_class_text(card, "property-content-info-comm-name")
 
         district = ""
-        address_m = re.search(
-            r'class="property-content-info-comm-address"[^>]*>(.*?)</p>',
-            card,
-            re.DOTALL,
-        )
-        if address_m:
-            address_text = _clean(re.sub(r"<[^>]+>", " ", address_m.group(1)))
-            if address_text:
-                district = address_text.split()[0]
+        address_text = _first_class_text(card, "property-content-info-comm-address")
+        if address_text:
+            district = address_text.split()[0]
 
         price = 0.0
-        price_m = re.search(r'class="property-price-total"[^>]*>\s*([\d.]+)', card)
+        price_text = _first_class_text(card, "property-price-total")
+        price_m = re.search(r"([\d.]+)", price_text)
         if price_m:
             price = float(price_m.group(1))
 
         unit_price = None
-        up_m = re.search(
-            r'class="property-price-average"[^>]*>\s*([\d,]+)元/㎡',
-            card,
-        )
+        unit_price_text = _first_class_text(card, "property-price-average")
+        up_m = re.search(r"([\d,]+)元/㎡", unit_price_text)
         if up_m:
             unit_price = float(up_m.group(1).replace(",", ""))
 
-        tags = [
-            _clean(tag)
-            for tag in re.findall(
-                r'class="property-content-tags"[^>]*>.*?<span[^>]*>([^<]+)</span>',
-                card,
-                re.DOTALL,
+        tags = _class_texts(card, "property-content-info-tag")
+        legacy_tags = re.search(
+            r'class="property-content-tags"[^>]*>(.*?)</div>',
+            card,
+            re.DOTALL,
+        )
+        if legacy_tags:
+            tags.extend(
+                _clean(tag)
+                for tag in re.findall(r"<span[^>]*>(.*?)</span>", legacy_tags.group(1), re.DOTALL)
+                if _clean(tag)
             )
-            if _clean(tag)
-        ]
 
         if not price:
             return None
@@ -496,6 +542,26 @@ class AnjukeClient(BaseClient):
             price_unit="万", area=0.0,
             url=f"https://beijing.anjuke.com/prop/view/{house_id}",
         )
+
+
+def _first_class_text(html: str, class_name: str) -> str:
+    texts = _class_texts(html, class_name, max_count=1)
+    return texts[0] if texts else ""
+
+
+def _class_texts(html: str, class_name: str, max_count: int | None = None) -> list[str]:
+    pattern = re.compile(
+        rf'<[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*>(.*?)</[^>]+>',
+        re.DOTALL,
+    )
+    texts: list[str] = []
+    for match in pattern.finditer(html):
+        text = _clean(re.sub(r"<[^>]+>", " ", match.group(1)))
+        if text:
+            texts.append(text)
+        if max_count is not None and len(texts) >= max_count:
+            break
+    return texts
 
 
 def _clean(text: str) -> str:

@@ -7,6 +7,7 @@ from house_cli.commands.analyze import analyze
 from house_cli.commands.mortgage import mortgage
 from house_cli.commands.watch import watch
 from house_cli.commands.export import export_cmd
+from house_cli.commands.refresh_cookies import refresh_cookies
 
 
 @click.group()
@@ -23,6 +24,7 @@ cli.add_command(analyze)
 cli.add_command(mortgage)
 cli.add_command(watch)
 cli.add_command(export_cmd, name="export")
+cli.add_command(refresh_cookies)
 
 
 if __name__ == "__main__":

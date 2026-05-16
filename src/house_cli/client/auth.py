@@ -1,8 +1,8 @@
-"""Browser cookie extraction and credential management.
+"""Cookie file and DevTools-based credential management.
 
 Cookie resolution order:
 1. Manual cookie file ~/.config/house-cli/cookies.json (fastest, user-controlled)
-2. browser-cookie3 library extraction from Chrome/Edge/Firefox (automatic)
+2. Explicit refresh from a verified Chrome/Edge DevTools session
 3. Fallback: empty dict (caller handles gracefully)
 
 Cookie file format (cookies.json):
@@ -16,12 +16,10 @@ Cookie file format (cookies.json):
 """
 
 import json
-import logging
 import os
 import stat
 import time
-
-log = logging.getLogger(__name__)
+import urllib.request
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
@@ -72,51 +70,78 @@ def get_cookies(domain: str) -> dict:
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 
-def _try_browser_cookie3(domain: str) -> dict:
-    """Extract cookies using browser-cookie3 library.
+def load_or_extract_cookies(domain: str) -> dict:
+    """Load cookies from the explicit cookie file.
 
-    Tries Chrome, then Edge, then Firefox.
-    Works even when the browser is running on most platforms.
+    Browser database extraction is intentionally not used here. On current
+    Windows/Edge builds it is often locked or encrypted in a way that fails
+    silently. Use refresh_cookies_from_cdp after completing browser verification.
+    """
+    return get_cookies(domain)
+
+
+def _domain_matches(host: str, domain: str) -> bool:
+    host = host.lstrip(".")
+    domain = domain.lstrip(".")
+    return host == domain or host.endswith(f".{domain}")
+
+
+def refresh_cookies_from_cdp(domain: str, port: int = 9222) -> dict:
+    """Refresh cookies from a running Chromium/Edge DevTools session.
+
+    Start Edge/Chrome with --remote-debugging-port=9222, complete the target
+    site's login or verification in that browser, then call this function.
     """
     try:
-        import browser_cookie3
-    except ImportError:
-        return {}
+        import websocket
+    except ImportError as exc:  # pragma: no cover - environment guard
+        raise RuntimeError(
+            "websocket-client is required for CDP cookie refresh. "
+            "Install dependencies from pyproject.toml first."
+        ) from exc
 
-    browsers = [
-        ("chrome", browser_cookie3.chrome),
-        ("edge", browser_cookie3.edge),
-        ("firefox", browser_cookie3.firefox),
-    ]
+    tabs_url = f"http://127.0.0.1:{port}/json"
+    try:
+        with urllib.request.urlopen(tabs_url, timeout=5) as resp:
+            tabs = json.load(resp)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot connect to Chrome/Edge DevTools at {tabs_url}. "
+            f"Start the browser with --remote-debugging-port={port} first."
+        ) from exc
 
-    for name, loader in browsers:
-        try:
-            cj = loader(domain_name=f".{domain}")
-            cookies = {c.name: c.value for c in cj if domain in c.domain}
-            if cookies:
-                log.debug("Extracted %d cookies from %s for %s", len(cookies), name, domain)
-                return cookies
-        except Exception:
-            continue
+    page = next(
+        (
+            tab for tab in tabs
+            if tab.get("type") == "page"
+            and domain.lstrip(".") in tab.get("url", "")
+            and tab.get("webSocketDebuggerUrl")
+        ),
+        None,
+    )
+    if page is None:
+        raise RuntimeError(
+            f"No open page for {domain} found in DevTools. "
+            "Open the verified target page in that browser first."
+        )
 
-    return {}
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10)
+    try:
+        ws.send(json.dumps({"id": 1, "method": "Network.getAllCookies"}))
+        while True:
+            msg = json.loads(ws.recv())
+            if msg.get("id") == 1:
+                break
+    finally:
+        ws.close()
 
+    cookies = {
+        item["name"]: item.get("value", "")
+        for item in msg.get("result", {}).get("cookies", [])
+        if _domain_matches(item.get("domain", ""), domain)
+    }
+    if not cookies:
+        raise RuntimeError(f"No {domain} cookies found in the verified browser page.")
 
-def load_or_extract_cookies(domain: str) -> dict:
-    """Load cookies from file, or try browser extraction as fallback.
-
-    Resolution order:
-    1. Manual cookie file (if present and not expired)
-    2. browser-cookie3 extraction (auto-saved on success)
-    """
-    cookies = get_cookies(domain)
-    if cookies:
-        return cookies
-
-    # Try browser-cookie3
-    cookies = _try_browser_cookie3(domain)
-    if cookies:
-        save_cookies(domain, cookies)
-        return cookies
-
-    return {}
+    save_cookies(domain, cookies)
+    return cookies

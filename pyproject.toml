@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.9,<2",
     "brotli>=1.1,<2",
+    "websocket-client>=1.8,<2",
     "house-cli @ git+https://github.com/Luxuzhou/house-cli.git@3373ddbe7cdba78b1bcc39e9abd03a643b9f8fb4",
 ]
 

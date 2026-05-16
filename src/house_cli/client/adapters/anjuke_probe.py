@@ -3,7 +3,7 @@
 import re
 from dataclasses import asdict
 
-from house_cli.client.adapters.anjuke import ANJUKE_CITY, AnjukeClient
+from house_cli.client.adapters.anjuke import AnjukeClient
 from house_cli.client.auth import load_or_extract_cookies
 from house_cli.client.http import HttpClient
 from house_cli.models.filter import SearchFilter
@@ -49,12 +49,12 @@ def _classify_token(token: str) -> str:
 
 async def discover_real_filter_inputs(city: str = "上海") -> dict:
     """Discover accepted filter tokens from real homepage sale links."""
-    city_slug = ANJUKE_CITY.get(city, "shanghai")
     cookies = load_or_extract_cookies("anjuke.com")
-    url = f"https://{city_slug}.anjuke.com/?from=AJK_Web_City"
     referer = "https://www.anjuke.com/sy-city.html"
 
     async with HttpClient(referer=referer) as client:
+        city_slug = await AnjukeClient()._resolve_city_slug(city, client, cookies)
+        url = f"https://{city_slug}.anjuke.com/?from=AJK_Web_City"
         resp = await client.get(url, cookies=cookies)
         html = resp.text
 

@@ -35,6 +35,40 @@ SALE_HTML = """
 """
 
 
+CURRENT_ZHUHAI_SALE_HTML = """
+<html><body>
+  <a class="property-ex" href="https://zh.anjuke.com/prop/view/S4332249199799304?from=from_esf_List_screen" target="_blank">
+    <div class="property-content">
+      <div class="property-content-title">
+        <h3 class="property-content-title-name" title="沿江路住宅 满五 高楼层采光充足 商品房 低容积白蕉">沿江路住宅 满五 高楼层采光充足 商品房 低容积白蕉</h3>
+      </div>
+      <div class="property-content-info">
+        <p class="property-content-info-text property-content-info-attribute">
+          <span>2</span><span>室</span><span>1</span><span>厅</span><span>1</span><span>卫</span>
+        </p>
+        <p class="property-content-info-text">60.25㎡</p>
+        <p class="property-content-info-text">北</p>
+        <p class="property-content-info-text">共3层</p>
+        <p class="property-content-info-text">1992年建造</p>
+      </div>
+      <div class="property-content-info-comm">
+        <p class="property-content-info-comm-name"><a href="https://zh.anjuke.com/community/view/1">沿江路住宅</a></p>
+        <p class="property-content-info-comm-address">斗门 白蕉 沿江路</p>
+      </div>
+      <div class="property-content-info-tags">
+        <span class="property-content-info-tag">满五年</span>
+        <span class="property-content-info-tag">采光较好</span>
+      </div>
+    </div>
+    <div class="property-price">
+      <p class="property-price-total"><span class="property-price-total-num">18</span><span class="property-price-total-text">万</span></p>
+      <p class="property-price-average">2988元/㎡</p>
+    </div>
+  </a>
+</body></html>
+"""
+
+
 class _SaleFlowHttpClient:
     def __init__(self, *args, **kwargs):
         self.calls = []
@@ -50,13 +84,15 @@ class _SaleFlowHttpClient:
 
     async def get(self, url: str, **kwargs):
         self.calls.append(url)
+        if url == "https://www.anjuke.com/sy-city.html":
+            return type("Resp", (), {"status_code": 200, "text": "<html><a href=\"https://shanghai.anjuke.com/\">上海房产网</a></html>", "cookies": {}})()
         return type("Resp", (), {"status_code": 200, "text": SALE_HTML, "cookies": {}})()
 
 
 def test_anjuke_builds_district_sale_url_from_known_slug():
     client = AnjukeClient()
 
-    url = client._build_list_url(SearchFilter(city="上海", district="浦东"))
+    url = client._build_list_url("shanghai", SearchFilter(city="上海", district="浦东"))
 
     assert url == "https://shanghai.anjuke.com/sale/pudong/"
 
@@ -79,6 +115,24 @@ def test_anjuke_parses_current_sale_dom():
     assert house.community == "上南花苑(三期)"
     assert house.district == "浦东"
     assert "近地铁" in house.tags
+
+
+def test_anjuke_parses_current_zhuhai_sale_dom_with_nested_links_and_price_spans():
+    client = AnjukeClient()
+
+    houses = client._parse_list(CURRENT_ZHUHAI_SALE_HTML, "珠海")
+
+    assert len(houses) == 1
+    house = houses[0]
+    assert house.id == "S4332249199799304"
+    assert house.title == "沿江路住宅 满五 高楼层采光充足 商品房 低容积白蕉"
+    assert house.price == 18.0
+    assert house.area == 60.25
+    assert house.unit_price == 2988.0
+    assert house.layout == "2室1厅1卫"
+    assert house.community == "沿江路住宅"
+    assert house.district == "斗门"
+    assert "满五年" in house.tags
 
 
 def test_anjuke_search_returns_sale_results_for_current_dom(monkeypatch):

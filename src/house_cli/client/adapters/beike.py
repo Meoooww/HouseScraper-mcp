@@ -44,6 +44,9 @@ class BeikeClient(BaseClient):
 
     platform_name = "beike"
 
+    def __init__(self, city: str = "上海"):
+        self.city = city
+
     @staticmethod
     def _is_blocked_response(resp, html: str) -> bool:
         final_url = str(getattr(resp, "url", ""))
@@ -130,7 +133,6 @@ class BeikeClient(BaseClient):
         url = self._build_list_url(filters)
         city_abbr = CITY_ABBR.get(filters.city, "sh")
         referer = f"https://{city_abbr}.ke.com/ershoufang/"
-        fallback_url = referer
 
         cookies = load_or_extract_cookies("ke.com")
         async with HttpClient(referer=referer) as client:
@@ -145,20 +147,12 @@ class BeikeClient(BaseClient):
                     cookies = merged
 
             html = resp.text
-            if url != fallback_url and self._is_blocked_response(resp, html):
-                resp = await client.get(fallback_url, cookies=cookies)
-                if resp.cookies:
-                    new_cookies = {k: v for k, v in resp.cookies.items()}
-                    if new_cookies:
-                        merged = {**cookies, **new_cookies}
-                        save_cookies("ke.com", merged)
-                        cookies = merged
-                html = resp.text
 
         if self._is_blocked_response(resp, html):
             raise RuntimeError(
-                "ke.com returned CAPTCHA. Please visit ke.com in your browser first, "
-                "then export cookies to ~/.config/house-cli/cookies.json"
+                f"ke.com blocked the strict filter URL: {url}. "
+                "Open this exact URL in Edge/Chrome, complete login or verification, "
+                "then run `py -m house_cli.main refresh-cookies --domain ke.com`."
             )
 
         return self._parse_list(html, filters.city)
@@ -173,8 +167,7 @@ class BeikeClient(BaseClient):
                 "~/.config/house-cli/cookies.json"
             )
 
-        # Determine city from cookies or default to sh
-        city_abbr = "sh"
+        city_abbr = CITY_ABBR.get(self.city, self.city if re.fullmatch(r"[a-z0-9-]+", self.city) else "sh")
         url = f"https://{city_abbr}.ke.com/ershoufang/{house_id}.html"
         referer = f"https://{city_abbr}.ke.com/ershoufang/"
 
@@ -184,11 +177,11 @@ class BeikeClient(BaseClient):
 
         if "CAPTCHA" in html or len(html) < 10000:
             raise RuntimeError(
-                "ke.com returned CAPTCHA for detail page. "
-                "Please refresh cookies in ~/.config/house-cli/cookies.json"
+                f"ke.com blocked detail page: {url}. "
+                "Refresh cookies from a verified browser session."
             )
 
-        return self._parse_detail(html, house_id)
+        return self._parse_detail(html, house_id, self.city, city_abbr)
 
     async def get_price_history(self, house_id: str) -> list[dict]:
         """Get price history. Requires detail page data."""
@@ -289,6 +282,9 @@ class BeikeClient(BaseClient):
                 seg = seg.strip()
                 if "楼层" in seg or "层" in seg:
                     floor = seg
+                    layout_m = re.search(r"(\d+\s*室\s*\d*\s*厅?)", seg)
+                    if layout_m:
+                        layout = layout_m.group(1).replace(" ", "")
                 elif re.search(r"\d{4}年", seg):
                     building_year = seg
                 elif "室" in seg or "厅" in seg or "房" in seg:
@@ -356,7 +352,9 @@ class BeikeClient(BaseClient):
             tags=tags,
         )
 
-    def _parse_detail(self, html: str, house_id: str) -> HouseDetail:
+    def _parse_detail(
+        self, html: str, house_id: str, city: str = "", city_abbr: str = "sh"
+    ) -> HouseDetail:
         """Parse detail page HTML into HouseDetail.
 
         Detail page sections:
@@ -398,11 +396,24 @@ class BeikeClient(BaseClient):
         building_type = ""
         building_year = ""
         elevator = ""
+        transaction_ownership = ""
+        house_usage = ""
+        ownership = ""
+        mortgage_info = ""
+        deed_status = ""
 
         # Parse info items: <span class="label">xxx</span><span>xxx</span>
         info_items = re.findall(
-            r'<span class="label">\s*([^<]+)</span>\s*<span>\s*([^<]+)',
+            r'<span class="label[^"]*">\s*([^<]+)</span>\s*<span>\s*([^<]+)',
             html,
+        )
+        info_items.extend(
+            (label, _strip_tags(value))
+            for label, value in re.findall(
+                r'<li[^>]*>\s*<span class="label[^"]*">\s*([^<]+)</span>(.*?)</li>',
+                html,
+                re.DOTALL,
+            )
         )
         for label, value in info_items:
             label = label.strip()
@@ -423,6 +434,16 @@ class BeikeClient(BaseClient):
                 building_year = value
             elif "电梯" in label:
                 elevator = value
+            elif "交易权属" in label:
+                transaction_ownership = value
+            elif "房屋用途" in label:
+                house_usage = value
+            elif "产权所属" in label:
+                ownership = value
+            elif "抵押信息" in label:
+                mortgage_info = value
+            elif "房本" in label:
+                deed_status = value
 
         # Community
         community = ""
@@ -446,7 +467,7 @@ class BeikeClient(BaseClient):
                 address = " ".join(l.strip() for l in links)
 
         # URL
-        url = f"https://sh.ke.com/ershoufang/{house_id}.html"
+        url = f"https://{city_abbr}.ke.com/ershoufang/{house_id}.html"
 
         # Nearby subway
         nearby_subway: list[str] = []
@@ -481,7 +502,7 @@ class BeikeClient(BaseClient):
         parking = ""
 
         base_items = re.findall(
-            r'<span class="label">\s*([^<]+)</span>\s*(?:<span>)?\s*([^<]+)',
+            r'<span class="label[^"]*">\s*([^<]+)</span>\s*(?:<span>)?\s*([^<]+)',
             html,
         )
         for label, value in base_items:
@@ -532,7 +553,7 @@ class BeikeClient(BaseClient):
             orientation=orientation,
             community=community,
             district=district,
-            city="",
+            city=city,
             address=address,
             url=url,
             listing_date="",
@@ -545,6 +566,11 @@ class BeikeClient(BaseClient):
             green_ratio=green_ratio,
             volume_ratio=volume_ratio,
             property_fee=property_fee,
+            transaction_ownership=transaction_ownership,
+            house_usage=house_usage,
+            ownership=ownership,
+            mortgage_info=mortgage_info,
+            deed_status=deed_status,
             nearby_schools=nearby_schools,
             nearby_subway=nearby_subway,
             price_history=price_history,

@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from house_cli.client.adapters.beike import BeikeClient
 from house_cli.models.filter import SearchFilter
 
@@ -63,14 +65,38 @@ class _BeikeFallbackHttpClient:
         )
 
 
-def test_beike_search_falls_back_to_base_listing_when_filtered_path_is_blocked(monkeypatch):
+def test_beike_search_raises_when_filtered_path_is_blocked(monkeypatch):
     monkeypatch.setattr("house_cli.client.adapters.beike.HttpClient", _BeikeFallbackHttpClient)
     monkeypatch.setattr("house_cli.client.adapters.beike.load_or_extract_cookies", lambda domain: {})
     monkeypatch.setattr("house_cli.client.adapters.beike.save_cookies", lambda domain, cookies: None)
 
     client = BeikeClient()
-    houses = asyncio.run(client.search(SearchFilter(city="上海", district="浦东")))
 
-    assert len(houses) == 1
-    assert houses[0].id == "107114156799"
-    assert houses[0].title == "测试房源"
+    with pytest.raises(RuntimeError, match="blocked the strict filter URL"):
+        asyncio.run(client.search(SearchFilter(city="上海", district="浦东")))
+
+
+def test_beike_detail_parses_transaction_ownership_and_city_url():
+    html = """
+    <html><body>
+      <h1 class="main">产权清晰测试房</h1>
+      <span class="total">25</span>
+      <div class="baseinform">
+        <li class=" has-data"><span class="label ">交易权属</span>商品房</li>
+        <li class=" has-data"><span class="label ">房屋用途</span>普通住宅</li>
+        <li class=" has-data"><span class="label ">产权所属</span>非共有</li>
+        <li class=" has-data"><span class="label ">抵押信息</span>无抵押</li>
+        <li class=" has-data"><span class="label ">房本备件</span>已上传房本照片</li>
+      </div>
+    </body></html>
+    """
+
+    detail = BeikeClient(city="珠海")._parse_detail(html, "105122339790", "珠海", "zh")
+
+    assert detail.city == "珠海"
+    assert detail.url == "https://zh.ke.com/ershoufang/105122339790.html"
+    assert detail.transaction_ownership == "商品房"
+    assert detail.house_usage == "普通住宅"
+    assert detail.ownership == "非共有"
+    assert detail.mortgage_info == "无抵押"
+    assert detail.deed_status == "已上传房本照片"
