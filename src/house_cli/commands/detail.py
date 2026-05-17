@@ -74,7 +74,12 @@ def _render_detail(d):
 def detail(house_id, city, output_format):
     """Show house detail. HOUSE_ID format: platform:id (e.g. beike:abc123)."""
     platform, raw_id = _parse_house_id(house_id)
-    adapter = BeikeClient(city=city) if platform == "beike" else ADAPTER_REGISTRY[platform]()
+    if platform == "beike":
+        adapter = BeikeClient(city=city)
+    elif platform == "anjuke":
+        adapter = ADAPTER_REGISTRY[platform](city=city)
+    else:
+        adapter = ADAPTER_REGISTRY[platform]()
     d = asyncio.run(adapter.detail(raw_id))
 
     if output_format == "json":

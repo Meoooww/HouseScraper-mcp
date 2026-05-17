@@ -39,6 +39,14 @@ SORT_MAP = {
 }
 
 
+def _resolve_city_abbr(city: str) -> str:
+    if city in CITY_ABBR:
+        return CITY_ABBR[city]
+    if re.fullmatch(r"[a-z0-9-]+", city):
+        return city.lower()
+    raise RuntimeError(f"Unsupported ke.com city: {city}")
+
+
 class BeikeClient(BaseClient):
     """Beike/Lianjia adapter (buy + rent)."""
 
@@ -62,7 +70,7 @@ class BeikeClient(BaseClient):
         )
 
     def _build_list_url(self, filters: SearchFilter) -> str:
-        city_abbr = CITY_ABBR.get(filters.city, "sh")
+        city_abbr = _resolve_city_abbr(filters.city)
         base = f"https://{city_abbr}.ke.com/ershoufang/"
 
         parts: list[str] = []
@@ -131,7 +139,7 @@ class BeikeClient(BaseClient):
     async def search(self, filters: SearchFilter) -> list[House]:
         """Search ke.com second-hand houses, parse HTML list page."""
         url = self._build_list_url(filters)
-        city_abbr = CITY_ABBR.get(filters.city, "sh")
+        city_abbr = _resolve_city_abbr(filters.city)
         referer = f"https://{city_abbr}.ke.com/ershoufang/"
 
         cookies = load_or_extract_cookies("ke.com")
@@ -167,7 +175,7 @@ class BeikeClient(BaseClient):
                 "~/.config/house-cli/cookies.json"
             )
 
-        city_abbr = CITY_ABBR.get(self.city, self.city if re.fullmatch(r"[a-z0-9-]+", self.city) else "sh")
+        city_abbr = _resolve_city_abbr(self.city)
         url = f"https://{city_abbr}.ke.com/ershoufang/{house_id}.html"
         referer = f"https://{city_abbr}.ke.com/ershoufang/"
 

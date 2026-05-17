@@ -325,45 +325,11 @@ Error: Unknown platform: lianjia
 - 列表 HTML 正则解析
 - 返回统一 `House` 数据模型
 
-### 已实现的筛选流入口契约（用于 MCP/工具层对接）
+### 已实现的筛选流入口
 
-`AnjukeClient` 当前已经提供两个公开方法：
+`AnjukeClient` 当前直接通过 `search(filters)` 构造并访问列表入口：
 
-- `filter_flow_contract()`: 返回筛选流契约（入口模板、接受入参、返回字段）
-- `build_filter_flow_entry(filters)`: 返回本次请求的入口 URL 与归一化参数
-
-当前契约定义为：
-
-- `flow_name`: `anjuke_sale_filter_flow`
-- `entry_url_template`: `https://{city}.anjuke.com/sale/?from=HomePage_Search`
-
-当前声明接受的入参有：
-
-- `city`（required）
-- `district`
-- `min_price`
-- `max_price`
-- `min_area`
-- `max_area`
-- `layout`
-- `sort_by`
-- `page`
-- `keywords`
-- `listing_type`
-
-当前声明的统一返回字段有：
-
-- `id`
-- `platform`
-- `title`
-- `price`
-- `price_unit`
-- `area`
-- `unit_price`
-- `layout`
-- `district`
-- `city`
-- `url`
+- `https://{city}.anjuke.com/sale/?from=HomePage_Search`
 
 ### 当前真正参与搜索 URL 构造的筛选项
 
@@ -371,8 +337,9 @@ Error: Unknown platform: lianjia
 
 | 筛选项 | 当前状态 | 说明 |
 | --- | --- | --- |
-| `city` | 已实现 | 通过 `ANJUKE_CITY` 做城市映射并落到子域名 |
-| 其他筛选项 | 未实现到 URL | 当前只进入统一筛选流入口，未把筛选项编码到 URL |
+| `city` | 已实现 | 从安居客城市索引动态解析城市子域名 |
+| `district` | 部分实现 | 命中本地区域 slug 时进入区域路径 |
+| 其他筛选项 | 未实现到 URL | 当前未把筛选项编码到 URL |
 
 ### 列表页实际返回字段
 

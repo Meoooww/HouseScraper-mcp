@@ -41,6 +41,9 @@ class AnjukeClient(BaseClient):
     platform_name = "anjuke"
     _city_slug_cache: dict[str, str] = {}
 
+    def __init__(self, city: str = "beijing"):
+        self.city = city
+
     @staticmethod
     def _clean_city_label(text: str) -> str:
         s = _clean(re.sub(r"<[^>]+>", " ", text))
@@ -103,67 +106,6 @@ class AnjukeClient(BaseClient):
 
         self._city_slug_cache[city_name] = slug
         return slug
-
-    def filter_flow_contract(self) -> dict:
-        """Describe Anjuke sale filter flow request/response contract."""
-        return {
-            "flow_name": "anjuke_sale_filter_flow",
-            "entry_url_template": "https://{city}.anjuke.com/sale/?from=HomePage_Search",
-            "accepted_params": {
-                "city": {"type": "string", "required": True},
-                "district": {"type": "string", "required": False},
-                "min_price": {"type": "number", "required": False},
-                "max_price": {"type": "number", "required": False},
-                "min_area": {"type": "number", "required": False},
-                "max_area": {"type": "number", "required": False},
-                "layout": {"type": "string", "required": False},
-                "sort_by": {"type": "string", "required": False},
-                "page": {"type": "integer", "required": False},
-                "keywords": {"type": "string", "required": False},
-                "listing_type": {"type": "string", "required": False},
-            },
-            "response_fields": [
-                "id",
-                "platform",
-                "title",
-                "price",
-                "price_unit",
-                "area",
-                "unit_price",
-                "layout",
-                "district",
-                "city",
-                "url",
-            ],
-        }
-
-    def build_filter_flow_entry(self, filters: SearchFilter) -> dict:
-        """Build a normalized filter-flow entry payload for introspection and tracing."""
-        request_params = {
-            "city": filters.city,
-            "district": filters.district,
-            "min_price": filters.min_price,
-            "max_price": filters.max_price,
-            "min_area": filters.min_area,
-            "max_area": filters.max_area,
-            "layout": filters.layout,
-            "sort_by": filters.sort_by,
-            "page": filters.page,
-            "keywords": filters.keywords,
-            "listing_type": filters.listing_type,
-        }
-        request_params = {
-            key: value
-            for key, value in request_params.items()
-            if value not in (None, "")
-        }
-
-        return {
-            "platform": "anjuke",
-            "source": "HomePage_Search",
-            "url_template": "https://{resolved_city_slug}.anjuke.com/sale/?from=HomePage_Search",
-            "request_params": request_params,
-        }
 
     def _build_list_url(self, city_slug: str, filters: SearchFilter) -> str:
         district_map = DISTRICTS.get(filters.city, {})
@@ -283,7 +225,7 @@ class AnjukeClient(BaseClient):
                 "Please visit anjuke.com in your browser first."
             )
 
-        city = "beijing"
+        city = self.city
         url = f"https://{city}.anjuke.com/prop/view/{house_id}"
         async with HttpClient(referer=f"https://{city}.anjuke.com/sale/") as client:
             try:
@@ -295,7 +237,7 @@ class AnjukeClient(BaseClient):
         if len(html) < 5000:
             raise RuntimeError("Anjuke detail page not accessible")
 
-        return self._parse_detail(html, house_id)
+        return self._parse_detail(html, house_id, city)
 
     async def get_price_history(self, house_id: str) -> list[dict]:
         d = await self.detail(house_id)
@@ -528,7 +470,7 @@ class AnjukeClient(BaseClient):
             url=url,
         )
 
-    def _parse_detail(self, html: str, house_id: str) -> HouseDetail:
+    def _parse_detail(self, html: str, house_id: str, city: str = "beijing") -> HouseDetail:
         title_m = re.search(r"<title>([^<]+)", html)
         title = _clean(title_m.group(1)) if title_m else ""
 
@@ -540,7 +482,7 @@ class AnjukeClient(BaseClient):
         return HouseDetail(
             id=house_id, platform="anjuke", title=title, price=price,
             price_unit="万", area=0.0,
-            url=f"https://beijing.anjuke.com/prop/view/{house_id}",
+            url=f"https://{city}.anjuke.com/prop/view/{house_id}",
         )
 
 

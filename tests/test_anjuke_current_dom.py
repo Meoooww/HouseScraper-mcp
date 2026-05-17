@@ -1,6 +1,10 @@
 import asyncio
 
+from click.testing import CliRunner
+
 from house_cli.client.adapters.anjuke import AnjukeClient
+from house_cli.commands.detail import detail
+from house_cli.models.house import HouseDetail
 from house_cli.models.filter import SearchFilter
 
 
@@ -89,6 +93,24 @@ class _SaleFlowHttpClient:
         return type("Resp", (), {"status_code": 200, "text": SALE_HTML, "cookies": {}})()
 
 
+class _DetailHttpClient:
+    calls: list[str] = []
+
+    def __init__(self, *args, **kwargs):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get(self, url: str, **kwargs):
+        self.calls.append(url)
+        html = "<title>珠海详情</title><span class=\"item-info-price-one-num\">18</span>" + "x" * 5000
+        return type("Resp", (), {"status_code": 200, "text": html, "cookies": {}})()
+
+
 def test_anjuke_builds_district_sale_url_from_known_slug():
     client = AnjukeClient()
 
@@ -145,3 +167,37 @@ def test_anjuke_search_returns_sale_results_for_current_dom(monkeypatch):
 
     assert len(houses) == 1
     assert houses[0].id == "S3884961297163274"
+
+
+def test_anjuke_detail_uses_configured_city_slug(monkeypatch):
+    _DetailHttpClient.calls = []
+    monkeypatch.setattr("house_cli.client.adapters.anjuke.HttpClient", _DetailHttpClient)
+    monkeypatch.setattr("house_cli.client.adapters.anjuke.load_or_extract_cookies", lambda domain: {"sessid": "ok"})
+
+    detail_result = asyncio.run(AnjukeClient(city="zh").detail("S4332249199799304"))
+
+    assert _DetailHttpClient.calls == ["https://zh.anjuke.com/prop/view/S4332249199799304"]
+    assert detail_result.url == "https://zh.anjuke.com/prop/view/S4332249199799304"
+
+
+def test_detail_command_passes_city_to_anjuke_adapter(monkeypatch):
+    seen = {}
+
+    class FakeAnjukeClient:
+        def __init__(self, city: str):
+            seen["city"] = city
+
+        async def detail(self, house_id: str):
+            seen["house_id"] = house_id
+            return HouseDetail(id=house_id, platform="anjuke", title="", price=0, price_unit="万", area=0)
+
+    monkeypatch.setitem(
+        __import__("house_cli.commands.detail", fromlist=["ADAPTER_REGISTRY"]).ADAPTER_REGISTRY,
+        "anjuke",
+        FakeAnjukeClient,
+    )
+
+    result = CliRunner().invoke(detail, ["anjuke:S4332249199799304", "--city", "zh", "--output", "json"])
+
+    assert result.exit_code == 0
+    assert seen == {"city": "zh", "house_id": "S4332249199799304"}

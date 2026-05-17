@@ -76,6 +76,11 @@ def test_beike_search_raises_when_filtered_path_is_blocked(monkeypatch):
         asyncio.run(client.search(SearchFilter(city="上海", district="浦东")))
 
 
+def test_beike_search_does_not_fallback_city_when_city_is_unknown():
+    with pytest.raises(RuntimeError, match="Unsupported ke.com city"):
+        asyncio.run(BeikeClient().search(SearchFilter(city="火星")))
+
+
 def test_beike_detail_parses_transaction_ownership_and_city_url():
     html = """
     <html><body>

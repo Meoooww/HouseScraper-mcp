@@ -5,15 +5,17 @@ description = "Local MCP server for real-estate listing discovery"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.9,<2",
+    "click>=8.1,<9",
+    "httpx>=0.27,<1",
+    "pyyaml>=6.0,<7",
+    "rich>=13,<15",
     "brotli>=1.1,<2",
     "websocket-client>=1.8,<2",
-    "house-cli @ git+https://github.com/Luxuzhou/house-cli.git@3373ddbe7cdba78b1bcc39e9abd03a643b9f8fb4",
 ]
 
 [project.scripts]
-housescraper-mcp = "housescraper_mcp.server:main"
-housescraper-cli = "housescraper_mcp.cli:main"
+housescraper-mcp = "house_cli.main:cli"
+housescraper-cli = "house_cli.main:cli"
 
 [build-system]
 requires = ["hatchling"]
@@ -23,10 +25,11 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/housescraper_mcp"]
+packages = ["src/house_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [dependency-groups]
 dev = [

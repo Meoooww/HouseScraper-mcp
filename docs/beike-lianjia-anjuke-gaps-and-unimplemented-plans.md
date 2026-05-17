@@ -235,14 +235,14 @@ Error: Unknown platform: lianjia
 
 ## 4.1 搜索筛选能力仍不完整（但入口契约已落地）
 
-截至当前实现，`anjuke` 已经补上了筛选流入口契约：
+截至当前实现，`anjuke` 已经补上了筛选流入口：
 
 - 入口模板：`https://{city}.anjuke.com/sale/?from=HomePage_Search`
-- 公开方法：`filter_flow_contract()`、`build_filter_flow_entry(filters)`
 
 但 `anjuke.search()` 真正参与 URL 构造并影响请求路径的仍然主要是：
 
 - `city`
+- 命中本地 slug 的 `district`
 
 以下字段虽然在统一模型和 CLI 中都出现了，但没有被 `anjuke` 实际消费：
 
@@ -267,13 +267,13 @@ Error: Unknown platform: lianjia
 
 非常高。这是 `anjuke` 从“能跑”到“能用”的关键一步。
 
-## 4.2 `district` 目前只在契约层可见，尚未做 URL 规则映射
+## 4.2 `district` 仅在本地已有 slug 时生效
 
-当前代码里，`district` 已经被纳入 `build_filter_flow_entry(filters)` 的 `request_params`，但未转成站点可识别的 URL 规则（slug/path/query）。
+当前代码里，`district` 会尝试从本地 `DISTRICTS` 映射转成站点可识别的 path slug。
 
 ### 含义
 
-`district` 在“参数声明层”已支持，但在“服务端筛选生效层”仍未完成。
+`district` 对已有映射的城市/区域可生效；缺失映射时仍会退回城市列表入口。
 
 ## 4.3 搜索会回退到首页推荐房源，不是真正的条件搜索闭环
 

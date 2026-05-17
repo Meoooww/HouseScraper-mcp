@@ -107,18 +107,3 @@ DISTRICTS: dict[str, dict[str, str]] = {
         "浐灞": "chanba",
     },
 }
-
-
-def get_city_abbr(city: str) -> str:
-    """Get city abbreviation, fallback to 'sh'."""
-    return CITY_ABBR.get(city, "sh")
-
-
-def get_district_slug(city: str, district: str) -> str:
-    """Get district slug for a city. Returns empty string if not found."""
-    return DISTRICTS.get(city, {}).get(district, "")
-
-
-def get_district_names(city: str) -> list[str]:
-    """Get list of district names for a city."""
-    return list(DISTRICTS.get(city, {}).keys())
