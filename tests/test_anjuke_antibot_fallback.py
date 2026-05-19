@@ -177,6 +177,7 @@ class _ZhCityIndexHttpClient:
 
 def test_anjuke_search_can_resolve_zhuhai_from_city_index(monkeypatch):
     _ZhCityIndexHttpClient.calls = []
+    AnjukeClient._city_slug_cache.clear()
     monkeypatch.setattr("house_cli.client.adapters.anjuke.HttpClient", _ZhCityIndexHttpClient)
     monkeypatch.setattr("house_cli.client.adapters.anjuke.load_or_extract_cookies", lambda domain: {})
     monkeypatch.setattr("house_cli.client.adapters.anjuke.save_cookies", lambda domain, cookies: None)
@@ -293,3 +294,88 @@ def test_anjuke_search_does_not_fallback_to_recommendation_when_search_is_blocke
 
     assert "anti-bot challenge" in str(exc.value)
     assert len(_SearchBlockedNoFallbackClient.calls) == 3
+
+
+class _RefinedSearchBlockedClient:
+    calls: list[str] = []
+
+    def __init__(self, *args, **kwargs):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def set_referer(self, referer: str):
+        return None
+
+    async def get(self, url: str, **kwargs):
+        self.calls.append(url)
+        if url == "https://www.anjuke.com/sy-city.html":
+            return _FakeResp(200, "<html><a href=\"https://zh.anjuke.com/\">珠海房产网</a></html>")
+        if url == "https://zh.anjuke.com/sale/o4/?from=HomePage_Search":
+            return _FakeResp(
+                200,
+                """
+                <html><body>
+                  <div class="filters">
+                    <a href="https://zh.anjuke.com/sale/a326-o4/?from=HomePage_Search">50-70㎡</a>
+                    <a href="https://zh.anjuke.com/sale/b282-o4/?from=HomePage_Search">二室</a>
+                    <a href="https://zh.anjuke.com/sale/z1-o4/?from=HomePage_Search">商品房住宅</a>
+                    <a href="https://zh.anjuke.com/sale/p3/?from=HomePage_Search">3</a>
+                  </div>
+                  <a class="property-ex" href="https://zh.anjuke.com/prop/view/S100?from=HomePage_Search">
+                    <div class="property-content">
+                      <div class="property-content-title"><h3 class="property-content-title-name">基础结果页房源</h3></div>
+                      <div class="property-content-info">
+                        <p class="property-content-info-text property-content-info-attribute"><span>1</span><span>室</span></p>
+                        <p class="property-content-info-text">17㎡</p>
+                      </div>
+                      <div class="property-price">
+                        <p class="property-price-total">5 万</p>
+                        <p class="property-price-average">2942元/㎡</p>
+                      </div>
+                    </div>
+                  </a>
+                </body></html>
+                """,
+            )
+        if url == "https://zh.anjuke.com/sale/a326-b282-o4-p3-z1/?from=HomePage_Search":
+            return _FakeResp(200, '<html><div id="@@xxzlGatewayUrl">https://callback.58.com/antibot/verifycode?foo=1&amp;bar=2</div></html>')
+        if "callback.58.com/antibot/verifycode" in url:
+            return _FakeResp(200, "<html>challenge</html>")
+        return _FakeResp(200, "<html></html>")
+
+
+def test_anjuke_search_does_not_silently_fallback_to_base_results_when_refined_url_is_blocked(monkeypatch):
+    _RefinedSearchBlockedClient.calls = []
+    AnjukeClient._city_slug_cache.clear()
+    monkeypatch.setattr("house_cli.client.adapters.anjuke.HttpClient", _RefinedSearchBlockedClient)
+    monkeypatch.setattr("house_cli.client.adapters.anjuke.load_or_extract_cookies", lambda domain: {})
+    monkeypatch.setattr("house_cli.client.adapters.anjuke.save_cookies", lambda domain, cookies: None)
+
+    client = AnjukeClient()
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(
+            client.search(
+                SearchFilter(
+                    city="珠海",
+                    min_area=60,
+                    max_area=70,
+                    layout="2室",
+                    sort_by="price_asc",
+                    page=3,
+                    anjuke_flow="search",
+                    tags=["商品房住宅"],
+                )
+            )
+        )
+
+    assert "anti-bot challenge" in str(exc.value)
+    assert _RefinedSearchBlockedClient.calls == [
+        "https://www.anjuke.com/sy-city.html",
+        "https://zh.anjuke.com/sale/o4/?from=HomePage_Search",
+        "https://zh.anjuke.com/sale/a326-b282-o4-p3-z1/?from=HomePage_Search",
+    ]

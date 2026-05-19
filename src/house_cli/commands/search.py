@@ -145,9 +145,9 @@ def _render_table(houses):
 @click.option("--platform", default="all", help="Platform: beike,anjuke,tongcheng,ziroom,fang,zhuge,all")
 @click.option(
     "--anjuke-flow",
-    type=click.Choice(["auto", "search", "recommend"]),
+    type=click.Choice(["auto", "search", "recommend", "browser"]),
     default="auto",
-    help="Anjuke flow preference: auto/search/recommend",
+    help="Anjuke flow preference: auto/search/recommend/browser",
 )
 @click.option("--sort", "sort_by", default="default", help="Sort: default,price_asc,price_desc,area,date")
 @click.option("--output", "output_format", type=click.Choice(["table", "json", "yaml"]), default="table")

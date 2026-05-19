@@ -9,8 +9,10 @@
 - `lianjia` 目前不是独立平台入口，不能直接 `--platform lianjia`
 - 贝壳和链家在业务上高度相关，但当前代码里“链家”不是单独 adapter
 
+
 基于 https://github.com/Luxuzhou/house-cli 二次开发
 请求头根据本机环境动态生成更贴近真实浏览器的指纹
+
 
 ## Agent Quick Start
 
@@ -22,6 +24,7 @@
 2. 确认页面已经能正常看到房源列表，而不是登录页、验证码页或空白页。
 3. 让本项目读取或刷新本地 cookies。
 4. 先单独验证 `beike` 和 `anjuke`，再跑聚合查询。
+5. 平台端只该承担它真实支持的筛选，超出的条件由 agent 在结果上做二次筛选。
 
 ## Cookie 前置
 
@@ -105,6 +108,9 @@ py -m house_cli.main refresh-cookies --domain ke.com
 - `--anjuke-flow search` / `--anjuke-flow auto` 不会静默回退到推荐流
 - 若搜索流被风控拦截，会直接报错并提示刷新 cookies
 - 只有显式使用 `--anjuke-flow recommend` 才会走城市首页推荐流
+- `--anjuke-flow browser` 会通过 Chrome/Edge DevTools 对真实浏览器标签页执行点击筛选流
+- 使用 `--anjuke-flow browser` 前，需要先用 `--remote-debugging-port=9222` 启动 Chrome/Edge，并打开一个 `anjuke.com` 房源列表页
+- `--anjuke-flow browser` 只应承担安居客页面真实可见的筛选能力，其他精确条件仍由 agent/CLI 对结果做二次过滤
 - 城市解析不再依赖内置白名单，运行时会从 `https://www.anjuke.com/sy-city.html` 动态解析城市 slug
 
 ## 当前平台边界
