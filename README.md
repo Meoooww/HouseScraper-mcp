@@ -22,9 +22,10 @@
    - 贝壳：<https://sh.ke.com/ershoufang/>
    - 安居客：<https://shanghai.anjuke.com/sale/>
 2. 确认页面已经能正常看到房源列表，而不是登录页、验证码页或空白页。
-3. 让本项目读取或刷新本地 cookies。
-4. 先单独验证 `beike` 和 `anjuke`，再跑聚合查询。
-5. 平台端只该承担它真实支持的筛选，超出的条件由 agent 在结果上做二次筛选。
+3. 打开后不要立刻切走或关闭该标签页；在 agent 读取 cookies、运行 `refresh-cookies` 或首次搜索完成前，尽量保持目标房源列表页停留在前台标签页。
+4. 让本项目读取或刷新本地 cookies。
+5. 先单独验证 `beike` 和 `anjuke`，再跑聚合查询。
+6. 平台端只该承担它真实支持的筛选，超出的条件由 agent 在结果上做二次筛选。
 
 ## Cookie 前置
 
@@ -49,7 +50,8 @@ cookie 策略见 `src/house_cli/client/auth.py`：
 ```powershell
 Start-Process -FilePath 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -ArgumentList @('--remote-debugging-port=9222','--remote-allow-origins=*','https://zh.ke.com/ershoufang/ba40ea70l2co41/')
 
-# 在浏览器里完成登录/滑块/人机验证，确认筛选页显示正常房源列表后：
+# 在浏览器里完成登录/滑块/人机验证，确认筛选页显示正常房源列表后，
+# 保持这个 ke.com 标签页停留，不要切到无关页面：
 $env:PYTHONPATH='src'
 py -m house_cli.main refresh-cookies --domain ke.com
 ```
@@ -89,8 +91,9 @@ py -m house_cli.main refresh-cookies --domain ke.com
 1. 用带 DevTools 端口的浏览器打开目标筛选 URL，而不是只打开基础列表页
 2. 完成滑块、人机验证或登录检查
 3. 确认你看到的是正常房源列表页，而不是 `hip.ke.com/captcha` 或 `clogin.ke.com/login`
-4. 运行 `py -m house_cli.main refresh-cookies --domain ke.com`
-5. 再运行 CLI 搜索
+4. 在 `refresh-cookies` 和首次 CLI 搜索完成前，保持这个筛选页标签页停留，不要切到别的网站标签页
+5. 运行 `py -m house_cli.main refresh-cookies --domain ke.com`
+6. 再运行 CLI 搜索
 
 当前代码会请求严格筛选页；如果筛选页被拦，会直接报错，不会静默回退到基础列表页。这样可以避免把“未筛选结果”误当成筛选流结果。
 
@@ -101,7 +104,8 @@ py -m house_cli.main refresh-cookies --domain ke.com
 1. 在浏览器中打开 <https://shanghai.anjuke.com/sale/>
 2. 完成验证码或风控校验
 3. 确认你看到的是正常房源列表页，而不是 `callback.58.com/antibot/verifycode`
-4. 刷新本地 `anjuke.com` cookies 后再运行 CLI
+4. 在 `refresh-cookies`、`--anjuke-flow browser` 或首次 CLI 搜索完成前，保持这个房源列表页标签页停留
+5. 刷新本地 `anjuke.com` cookies 后再运行 CLI
 
 注意：
 
@@ -159,5 +163,5 @@ py -m house_cli.main detail beike:105122339790 --city 珠海 --output json
 3. cookie 是否在 7 天 TTL 内，且贝壳是否包含 `lianjia_token`、`lianjia_token_secure`、`security_ticket`
 4. 贝壳是否跳到了 `clogin.ke.com/login` 或 `hip.ke.com/captcha`
 5. 安居客是否跳到了 `callback.58.com/antibot/verifycode`
-6. 贝壳命令报 strict filter URL blocked 时，重新用 DevTools 浏览器打开同一个筛选 URL 并运行 `refresh-cookies`
+6. 贝壳命令报 strict filter URL blocked 时，重新用 DevTools 浏览器打开同一个筛选 URL、保持该标签页停留，并运行 `refresh-cookies`
 7. 是否是筛选过严导致结果被客户端过滤为空
